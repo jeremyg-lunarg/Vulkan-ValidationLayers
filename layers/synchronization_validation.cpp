@@ -113,39 +113,32 @@ static const char *string_SyncHazard(SyncHazard hazard) {
 static const SyncStageAccessInfoType *SyncStageAccessInfoFromMask(SyncStageAccessFlags flags) {
     // Return the info for the first bit found
     const SyncStageAccessInfoType *info = nullptr;
-    uint32_t index = 0;
-    while (flags) {
-        if (flags & 0x1) {
-            flags = 0;
-            info = &syncStageAccessInfoByStageAccessIndex[index];
-        } else {
-            flags = flags >> 1;
-            index++;
+    for (size_t i = 0; i < flags.size(); i++) {
+        if (flags.test(i)) {
+            info = &syncStageAccessInfoByStageAccessIndex[i];
+            break;
         }
     }
     return info;
 }
 
-static std::string string_SyncStageAccessFlags(SyncStageAccessFlags flags, const char *sep = "|") {
+static std::string string_SyncStageAccessFlags(const SyncStageAccessFlags &flags, const char *sep = "|") {
     std::string out_str;
-    uint32_t index = 0;
-    if (0 == flags) {
+    if (flags.none()) {
         out_str = "0";
-    }
-    while (flags) {
-        const auto &info = syncStageAccessInfoByStageAccessIndex[index];
-        if (flags & info.stage_access_bit) {
-            if (!out_str.empty()) {
-                out_str.append(sep);
+    } else {
+        for (size_t i = 0; i < syncStageAccessInfoByStageAccessIndex.size(); i++) {
+            const auto &info = syncStageAccessInfoByStageAccessIndex[i];
+            if ((flags & info.stage_access_bit).any()) {
+                if (!out_str.empty()) {
+                    out_str.append(sep);
+                }
+                out_str.append(info.name);
             }
-            out_str.append(info.name);
-            flags = flags & ~info.stage_access_bit;
         }
-        index++;
-        assert(index < syncStageAccessInfoByStageAccessIndex.size());
-    }
-    if (out_str.length() == 0) {
-        out_str.append("Unhandled SyncStageAccess");
+        if (out_str.length() == 0) {
+            out_str.append("Unhandled SyncStageAccess");
+        }
     }
     return out_str;
 }
@@ -175,27 +168,33 @@ static std::string string_UsageTag(const HazardResult &hazard) {
 //       rules apply only to this specific access for this stage, and not the stage as a whole. The ordering detection
 //       also reflects this special case for read hazard detection (using access instead of exec scope)
 static constexpr VkPipelineStageFlags kColorAttachmentExecScope = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-static constexpr SyncStageAccessFlags kColorAttachmentAccessScope =
-    SyncStageAccessFlagBits::SYNC_COLOR_ATTACHMENT_OUTPUT_COLOR_ATTACHMENT_READ_BIT |
-    SyncStageAccessFlagBits::SYNC_COLOR_ATTACHMENT_OUTPUT_COLOR_ATTACHMENT_READ_NONCOHERENT_BIT_EXT |
-    SyncStageAccessFlagBits::SYNC_COLOR_ATTACHMENT_OUTPUT_COLOR_ATTACHMENT_WRITE_BIT |
-    SyncStageAccessFlagBits::SYNC_FRAGMENT_SHADER_INPUT_ATTACHMENT_READ_BIT;  // Note: this is intentionally not in the exec scope
+static const SyncStageAccessFlags kColorAttachmentAccessScope =
+    SYNC_COLOR_ATTACHMENT_OUTPUT_COLOR_ATTACHMENT_READ_BIT |
+    SYNC_COLOR_ATTACHMENT_OUTPUT_COLOR_ATTACHMENT_READ_NONCOHERENT_BIT_EXT |
+    SYNC_COLOR_ATTACHMENT_OUTPUT_COLOR_ATTACHMENT_WRITE_BIT |
+    SYNC_FRAGMENT_SHADER_INPUT_ATTACHMENT_READ_BIT;  // Note: this is intentionally not in the exec scope
 static constexpr VkPipelineStageFlags kDepthStencilAttachmentExecScope =
     VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-static constexpr SyncStageAccessFlags kDepthStencilAttachmentAccessScope =
-    SyncStageAccessFlagBits::SYNC_EARLY_FRAGMENT_TESTS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-    SyncStageAccessFlagBits::SYNC_EARLY_FRAGMENT_TESTS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-    SyncStageAccessFlagBits::SYNC_LATE_FRAGMENT_TESTS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-    SyncStageAccessFlagBits::SYNC_LATE_FRAGMENT_TESTS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-    SyncStageAccessFlagBits::SYNC_FRAGMENT_SHADER_INPUT_ATTACHMENT_READ_BIT;  // Note: this is intentionally not in the exec scope
+static const SyncStageAccessFlags kDepthStencilAttachmentAccessScope =
+    SYNC_EARLY_FRAGMENT_TESTS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+    SYNC_EARLY_FRAGMENT_TESTS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+    SYNC_LATE_FRAGMENT_TESTS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+    SYNC_LATE_FRAGMENT_TESTS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+    SYNC_FRAGMENT_SHADER_INPUT_ATTACHMENT_READ_BIT;  // Note: this is intentionally not in the exec scope
 
-static constexpr SyncOrderingBarrier kColorAttachmentRasterOrder = {kColorAttachmentExecScope, kColorAttachmentAccessScope};
-static constexpr SyncOrderingBarrier kDepthStencilAttachmentRasterOrder = {kDepthStencilAttachmentExecScope,
+static const SyncOrderingBarrier kColorAttachmentRasterOrder = {kColorAttachmentExecScope, kColorAttachmentAccessScope};
+static const SyncOrderingBarrier kDepthStencilAttachmentRasterOrder = {kDepthStencilAttachmentExecScope,
                                                                            kDepthStencilAttachmentAccessScope};
-static constexpr SyncOrderingBarrier kAttachmentRasterOrder = {kDepthStencilAttachmentExecScope | kColorAttachmentExecScope,
+static const SyncOrderingBarrier kAttachmentRasterOrder = {kDepthStencilAttachmentExecScope | kColorAttachmentExecScope,
                                                                kDepthStencilAttachmentAccessScope | kColorAttachmentAccessScope};
 // Sometimes we have an internal access conflict, and we using the kCurrentCommandTag to set and detect in temporary/proxy contexts
 static const ResourceUsageTag kCurrentCommandTag(ResourceUsageTag::kMaxIndex, CMD_NONE);
+
+static VkDeviceSize ResourceBaseAddress(const BINDABLE &bindable) {
+    return bindable.binding.offset + bindable.binding.mem_state->fake_base_address;
+}
+
+static bool SimpleBinding(const BINDABLE &bindable) { return !bindable.sparse && bindable.binding.mem_state; }
 
 inline VkDeviceSize GetRealWholeSize(VkDeviceSize offset, VkDeviceSize size, VkDeviceSize whole_size) {
     if (size == VK_WHOLE_SIZE) {
@@ -242,7 +241,7 @@ VkPipelineStageFlags ExpandPipelineStages(VkQueueFlags queue_flags, VkPipelineSt
 }
 
 VkPipelineStageFlags RelatedPipelineStages(VkPipelineStageFlags stage_mask,
-                                           std::map<VkPipelineStageFlagBits, VkPipelineStageFlags> &map) {
+                                           const std::map<VkPipelineStageFlagBits, VkPipelineStageFlags> &map) {
     VkPipelineStageFlags unscanned = stage_mask;
     VkPipelineStageFlags related = 0;
     for (const auto &entry : map) {
@@ -320,6 +319,20 @@ bool IsImageLayoutStencilWritable(VkImageLayout image_layout) {
 // Class AccessContext stores the state of accesses specific to a Command, Subpass, or Queue
 const std::array<AccessContext::AddressType, AccessContext::kAddressTypeCount> AccessContext::kAddressTypes = {
     AccessContext::AddressType::kLinearAddress, AccessContext::AddressType::kIdealizedAddress};
+
+template <typename Action>
+static void ApplyOverImageRange(const IMAGE_STATE &image_state, const VkImageSubresourceRange &subresource_range_arg,
+                                Action &action) {
+    // At this point the "apply over range" logic only supports a single memory binding
+    if (!SimpleBinding(image_state)) return;
+    auto subresource_range = NormalizeSubresourceRange(image_state.createInfo, subresource_range_arg);
+    subresource_adapter::ImageRangeGenerator range_gen(*image_state.fragment_encoder.get(), subresource_range, {0, 0, 0},
+                                                       image_state.createInfo.extent);
+    const auto base_address = ResourceBaseAddress(image_state);
+    for (; range_gen->non_empty(); ++range_gen) {
+        action((*range_gen + base_address));
+    }
+}
 
 // Tranverse the attachment resolves for this a specific subpass, and do action() to them.
 // Used by both validation and record operations
@@ -442,7 +455,7 @@ class UpdateStateResolveAction {
 };
 
 void HazardResult::Set(const ResourceAccessState *access_state_, SyncStageAccessIndex usage_index_, SyncHazard hazard_,
-                       SyncStageAccessFlags prior_, const ResourceUsageTag &tag_) {
+                       const SyncStageAccessFlags& prior_, const ResourceUsageTag &tag_) {
     access_state = std::unique_ptr<const ResourceAccessState>(new ResourceAccessState(*access_state_));
     usage_index = usage_index_;
     hazard = hazard_;
@@ -559,10 +572,35 @@ HazardResult AccessContext::DetectAsyncHazard(AddressType type, const Detector &
     return hazard;
 }
 
-// Returns the last resolved entry
+struct ApplySubpassTransitionBarriersAction {
+    ApplySubpassTransitionBarriersAction(const std::vector<SyncBarrier> &barriers_) : barriers(barriers_) {}
+    void operator()(ResourceAccessState *access) const {
+        assert(access);
+        access->ApplyBarriers(barriers, true);
+    }
+    const std::vector<SyncBarrier> &barriers;
+};
+
+struct ApplyTrackbackBarriersAction {
+    ApplyTrackbackBarriersAction(const std::vector<SyncBarrier> &barriers_) : barriers(barriers_) {}
+    void operator()(ResourceAccessState *access) const {
+        assert(access);
+        assert(!access->HasPendingState());
+        access->ApplyBarriers(barriers, false);
+        access->ApplyPendingBarriers(kCurrentCommandTag);
+    }
+    const std::vector<SyncBarrier> &barriers;
+};
+
+// Splits a single map entry into piece matching the entries in [first, last) the total range over [first, last) must be
+// contained with entry.  Entry must be an iterator pointing to dest, first and last must be iterators pointing to a
+// *different* map from dest.
+// Returns the position past the last resolved range -- the entry covering the remainder of entry->first not included in the
+// range [first, last)
+template <typename BarrierAction>
 static void ResolveMapToEntry(ResourceAccessRangeMap *dest, ResourceAccessRangeMap::iterator entry,
                               ResourceAccessRangeMap::const_iterator first, ResourceAccessRangeMap::const_iterator last,
-                              const std::vector<SyncBarrier> &barriers) {
+                              BarrierAction &barrier_action) {
     auto at = entry;
     for (auto pos = first; pos != last; ++pos) {
         // Every member of the input iterator range must fit within the remaining portion of entry
@@ -570,10 +608,8 @@ static void ResolveMapToEntry(ResourceAccessRangeMap *dest, ResourceAccessRangeM
         assert(at != dest->end());
         // Trim up at to the same size as the entry to resolve
         at = sparse_container::split(at, *dest, pos->first);
-        auto access = pos->second;
-        if (barriers.size()) {
-            access.ApplyBarriers(barriers);
-        }
+        auto access = pos->second;  // intentional copy
+        barrier_action(&access);
         at->second.Resolve(access);
         ++at;  // Go to the remaining unused section of entry
     }
@@ -587,7 +623,8 @@ static SyncBarrier MergeBarriers(const std::vector<SyncBarrier> &barriers) {
     return merged;
 }
 
-void AccessContext::ResolveAccessRange(AddressType type, const ResourceAccessRange &range, const std::vector<SyncBarrier> &barriers,
+template <typename BarrierAction>
+void AccessContext::ResolveAccessRange(AddressType type, const ResourceAccessRange &range, BarrierAction &barrier_action,
                                        ResourceAccessRangeMap *resolve_map, const ResourceAccessState *infill_state,
                                        bool recur_to_infill) const {
     if (!range.non_empty()) return;
@@ -597,10 +634,9 @@ void AccessContext::ResolveAccessRange(AddressType type, const ResourceAccessRan
         const auto current_range = current->range & range;
         if (current->pos_B->valid) {
             const auto &src_pos = current->pos_B->lower_bound;
-            auto access = src_pos->second;
-            if (barriers.size()) {
-                access.ApplyBarriers(barriers);
-            }
+            auto access = src_pos->second;  // intentional copy
+            barrier_action(&access);
+
             if (current->pos_A->valid) {
                 const auto trimmed = sparse_container::split(current->pos_A->lower_bound, *resolve_map, current_range);
                 trimmed->second.Resolve(access);
@@ -616,15 +652,13 @@ void AccessContext::ResolveAccessRange(AddressType type, const ResourceAccessRan
                     // Dest is valid, so we need to accumulate along the DAG and then resolve... in an N-to-1 resolve operation
                     ResourceAccessRangeMap gap_map;
                     ResolvePreviousAccess(type, current_range, &gap_map, infill_state);
-                    ResolveMapToEntry(resolve_map, current->pos_A->lower_bound, gap_map.begin(), gap_map.end(), barriers);
+                    ResolveMapToEntry(resolve_map, current->pos_A->lower_bound, gap_map.begin(), gap_map.end(), barrier_action);
                 } else {
                     // There isn't anything in dest in current)range, so we can accumulate directly into it.
                     ResolvePreviousAccess(type, current_range, resolve_map, infill_state);
-                    if (barriers.size()) {
-                        // Need to apply the barrier to the accesses we accumulated, noting that we haven't updated current
-                        for (auto pos = resolve_map->lower_bound(current_range); pos != current->pos_A->lower_bound; ++pos) {
-                            pos->second.ApplyBarriers(barriers);
-                        }
+                    // Need to apply the barrier to the accesses we accumulated, noting that we haven't updated current
+                    for (auto pos = resolve_map->lower_bound(current_range); pos != current->pos_A->lower_bound; ++pos) {
+                        barrier_action(&pos->second);
                     }
                 }
                 // Given that there could be gaps we need to seek carefully to not repeatedly search the same gaps in the next
@@ -652,7 +686,7 @@ void AccessContext::ResolveAccessRange(AddressType type, const ResourceAccessRan
         const auto the_end = resolve_map->end();
         ResolvePreviousAccess(type, trailing_fill_range, &gap_map, infill_state);
         for (auto &access : gap_map) {
-            access.second.ApplyBarriers(barriers);
+            barrier_action(&access.second);
             resolve_map->insert(the_end, access);
         }
     }
@@ -667,11 +701,13 @@ void AccessContext::ResolvePreviousAccess(AddressType type, const ResourceAccess
     } else {
         // Look for something to fill the gap further along.
         for (const auto &prev_dep : prev_) {
-            prev_dep.context->ResolveAccessRange(type, range, prev_dep.barriers, descent_map, infill_state);
+            const ApplyTrackbackBarriersAction barrier_action(prev_dep.barriers);
+            prev_dep.context->ResolveAccessRange(type, range, barrier_action, descent_map, infill_state);
         }
 
         if (src_external_.context) {
-            src_external_.context->ResolveAccessRange(type, range, src_external_.barriers, descent_map, infill_state);
+            const ApplyTrackbackBarriersAction barrier_action(src_external_.barriers);
+            src_external_.context->ResolveAccessRange(type, range, barrier_action, descent_map, infill_state);
         }
     }
 }
@@ -680,11 +716,6 @@ AccessContext::AddressType AccessContext::ImageAddressType(const IMAGE_STATE &im
     return (image.fragment_encoder->IsLinearImage()) ? AddressType::kLinearAddress : AddressType::kIdealizedAddress;
 }
 
-VkDeviceSize AccessContext::ResourceBaseAddress(const BINDABLE &bindable) {
-    return bindable.binding.offset + bindable.binding.mem_state->fake_base_address;
-}
-
-static bool SimpleBinding(const BINDABLE &bindable) { return !bindable.sparse && bindable.binding.mem_state; }
 
 static SyncStageAccessIndex ColorLoadUsage(VkAttachmentLoadOp load_op) {
     const auto stage_access = (load_op == VK_ATTACHMENT_LOAD_OP_LOAD) ? SYNC_COLOR_ATTACHMENT_OUTPUT_COLOR_ATTACHMENT_READ
@@ -707,18 +738,36 @@ static AccessContext *CreateStoreResolveProxyContext(const AccessContext &contex
     return proxy;
 }
 
-void AccessContext::ResolvePreviousAccess(const IMAGE_STATE &image_state, const VkImageSubresourceRange &subresource_range_arg,
-                                          AddressType address_type, ResourceAccessRangeMap *descent_map,
-                                          const ResourceAccessState *infill_state) const {
-    if (!SimpleBinding(image_state)) return;
-
-    auto subresource_range = NormalizeSubresourceRange(image_state.createInfo, subresource_range_arg);
-    subresource_adapter::ImageRangeGenerator range_gen(*image_state.fragment_encoder.get(), subresource_range, {0, 0, 0},
-                                                       image_state.createInfo.extent);
-    const auto base_address = ResourceBaseAddress(image_state);
-    for (; range_gen->non_empty(); ++range_gen) {
-        ResolvePreviousAccess(address_type, (*range_gen + base_address), descent_map, infill_state);
+template <typename BarrierAction>
+class ResolveAccessRangeFunctor {
+  public:
+    ResolveAccessRangeFunctor(const AccessContext &context, AccessContext::AddressType address_type,
+                              ResourceAccessRangeMap *descent_map, const ResourceAccessState *infill_state,
+                              BarrierAction &barrier_action)
+        : context_(context),
+          address_type_(address_type),
+          descent_map_(descent_map),
+          infill_state_(infill_state),
+          barrier_action_(barrier_action) {}
+    ResolveAccessRangeFunctor() = delete;
+    void operator()(const ResourceAccessRange &range) const {
+        context_.ResolveAccessRange(address_type_, range, barrier_action_, descent_map_, infill_state_);
     }
+
+  private:
+    const AccessContext &context_;
+    const AccessContext::AddressType address_type_;
+    ResourceAccessRangeMap *const descent_map_;
+    const ResourceAccessState *infill_state_;
+    BarrierAction &barrier_action_;
+};
+
+template <typename BarrierAction>
+void AccessContext::ResolveAccessRange(const IMAGE_STATE &image_state, const VkImageSubresourceRange &subresource_range,
+                                       BarrierAction &barrier_action, AddressType address_type, ResourceAccessRangeMap *descent_map,
+                                       const ResourceAccessState *infill_state) const {
+    const ResolveAccessRangeFunctor<BarrierAction> action(*this, address_type, descent_map, infill_state, barrier_action);
+    ApplyOverImageRange(image_state, subresource_range, action);
 }
 
 // Layout transitions are handled as if the were occuring in the beginning of the next subpass
@@ -772,12 +821,6 @@ bool AccessContext::ValidateLoadOperation(const SyncValidator &sync_state, const
     VkExtent3D extent = CastTo3D(render_area.extent);
     VkOffset3D offset = CastTo3D(render_area.offset);
 
-    SyncStageAccessFlags accumulate_access_scope = 0;
-    for (const auto &barrier : src_external_.barriers) {
-        accumulate_access_scope |= barrier.dst_access_scope;
-    }
-    const auto external_access_scope = accumulate_access_scope;
-
     for (uint32_t i = 0; i < rp_state.createInfo.attachmentCount; i++) {
         if (subpass == rp_state.attachment_first_subpass[i]) {
             if (attachment_views[i] == nullptr) continue;
@@ -785,7 +828,6 @@ bool AccessContext::ValidateLoadOperation(const SyncValidator &sync_state, const
             const IMAGE_STATE *image = view.image_state.get();
             if (image == nullptr) continue;
             const auto &ci = attachment_ci[i];
-            const bool is_transition = rp_state.attachment_first_is_transition[i];
 
             // Need check in the following way
             // 1) if the usage bit isn't in the dest_access_scope, and there is layout traniition for initial use, report hazard
@@ -798,62 +840,39 @@ bool AccessContext::ValidateLoadOperation(const SyncValidator &sync_state, const
             const bool is_color = !(has_depth || has_stencil);
 
             const SyncStageAccessIndex load_index = has_depth ? DepthStencilLoadUsage(ci.loadOp) : ColorLoadUsage(ci.loadOp);
-            const SyncStageAccessFlags load_mask = (has_depth || is_color) ? SyncStageAccess::Flags(load_index) : 0U;
             const SyncStageAccessIndex stencil_load_index = has_stencil ? DepthStencilLoadUsage(ci.stencilLoadOp) : load_index;
-            const SyncStageAccessFlags stencil_mask = has_stencil ? SyncStageAccess::Flags(stencil_load_index) : 0U;
 
             HazardResult hazard;
             const char *aspect = nullptr;
-            if (is_transition) {
-                // For transition w
-                SyncHazard transition_hazard = SyncHazard::NONE;
-                bool checked_stencil = false;
-                if (load_mask) {
-                    if ((load_mask & external_access_scope) != load_mask) {
-                        transition_hazard =
-                            SyncStageAccess::HasWrite(load_mask) ? SyncHazard::WRITE_AFTER_WRITE : SyncHazard::READ_AFTER_WRITE;
-                        aspect = is_color ? "color" : "depth";
-                    }
-                    if (!transition_hazard && stencil_mask) {
-                        if ((stencil_mask & external_access_scope) != stencil_mask) {
-                            transition_hazard = SyncStageAccess::HasWrite(stencil_mask) ? SyncHazard::WRITE_AFTER_WRITE
-                                                                                        : SyncHazard::READ_AFTER_WRITE;
-                            aspect = "stencil";
-                            checked_stencil = true;
-                        }
-                    }
-                }
-                if (transition_hazard) {
-                    // Hazard vs. ILT
-                    auto load_op_string = string_VkAttachmentLoadOp(checked_stencil ? ci.stencilLoadOp : ci.loadOp);
-                    skip |=
-                        sync_state.LogError(rp_state.renderPass, string_SyncHazardVUID(transition_hazard),
-                                            "%s: Hazard %s vs. layout transition in subpass %" PRIu32 " for attachment %" PRIu32
-                                            " aspect %s during load with loadOp %s.",
-                                            func_name, string_SyncHazard(transition_hazard), subpass, i, aspect, load_op_string);
-                }
-            } else {
-                auto hazard_range = view.normalized_subresource_range;
-                bool checked_stencil = false;
-                if (is_color) {
-                    hazard = DetectHazard(*image, load_index, view.normalized_subresource_range, offset, extent);
-                    aspect = "color";
-                } else {
-                    if (has_depth) {
-                        hazard_range.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-                        hazard = DetectHazard(*image, load_index, hazard_range, offset, extent);
-                        aspect = "depth";
-                    }
-                    if (!hazard.hazard && has_stencil) {
-                        hazard_range.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
-                        hazard = DetectHazard(*image, stencil_load_index, hazard_range, offset, extent);
-                        aspect = "stencil";
-                        checked_stencil = true;
-                    }
-                }
 
-                if (hazard.hazard) {
-                    auto load_op_string = string_VkAttachmentLoadOp(checked_stencil ? ci.stencilLoadOp : ci.loadOp);
+            auto hazard_range = view.normalized_subresource_range;
+            bool checked_stencil = false;
+            if (is_color) {
+                hazard = DetectHazard(*image, load_index, view.normalized_subresource_range, offset, extent);
+                aspect = "color";
+            } else {
+                if (has_depth) {
+                    hazard_range.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+                    hazard = DetectHazard(*image, load_index, hazard_range, offset, extent);
+                    aspect = "depth";
+                }
+                if (!hazard.hazard && has_stencil) {
+                    hazard_range.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+                    hazard = DetectHazard(*image, stencil_load_index, hazard_range, offset, extent);
+                    aspect = "stencil";
+                    checked_stencil = true;
+                }
+            }
+
+            if (hazard.hazard) {
+                auto load_op_string = string_VkAttachmentLoadOp(checked_stencil ? ci.stencilLoadOp : ci.loadOp);
+                if (hazard.tag == kCurrentCommandTag) {
+                    // Hazard vs. ILT
+                    skip |= sync_state.LogError(rp_state.renderPass, string_SyncHazardVUID(hazard.hazard),
+                                                "%s: Hazard %s vs. layout transition in subpass %" PRIu32 " for attachment %" PRIu32
+                                                " aspect %s during load with loadOp %s.",
+                                                func_name, string_SyncHazard(hazard.hazard), subpass, i, aspect, load_op_string);
+                } else {
                     skip |= sync_state.LogError(rp_state.renderPass, string_SyncHazardVUID(hazard.hazard),
                                                 "%s: Hazard %s in subpass %" PRIu32 " for attachment %" PRIu32
                                                 " aspect %s during load with loadOp %s. Access info %s.",
@@ -1064,14 +1083,14 @@ class BarrierHazardDetector {
 };
 
 HazardResult AccessContext::DetectBarrierHazard(AddressType type, SyncStageAccessIndex current_usage,
-                                                VkPipelineStageFlags src_exec_scope, SyncStageAccessFlags src_access_scope,
+                                                VkPipelineStageFlags src_exec_scope, const SyncStageAccessFlags& src_access_scope,
                                                 const ResourceAccessRange &range, DetectOptions options) const {
     BarrierHazardDetector detector(current_usage, src_exec_scope, src_access_scope);
     return DetectHazard(type, detector, range, options);
 }
 
 HazardResult AccessContext::DetectImageBarrierHazard(const IMAGE_STATE &image, VkPipelineStageFlags src_exec_scope,
-                                                     SyncStageAccessFlags src_access_scope,
+                                                     const SyncStageAccessFlags& src_access_scope,
                                                      const VkImageSubresourceRange &subresource_range,
                                                      DetectOptions options) const {
     BarrierHazardDetector detector(SyncStageAccessIndex::SYNC_IMAGE_LAYOUT_TRANSITION, src_exec_scope, src_access_scope);
@@ -1080,7 +1099,7 @@ HazardResult AccessContext::DetectImageBarrierHazard(const IMAGE_STATE &image, V
 }
 
 HazardResult AccessContext::DetectImageBarrierHazard(const IMAGE_STATE &image, VkPipelineStageFlags src_exec_scope,
-                                                     SyncStageAccessFlags src_stage_accesses,
+                                                     const SyncStageAccessFlags& src_stage_accesses,
                                                      const VkImageMemoryBarrier &barrier) const {
     auto subresource_range = NormalizeSubresourceRange(image.createInfo, barrier.subresourceRange);
     const auto src_access_scope = SyncStageAccess::AccessScope(src_stage_accesses, barrier.srcAccessMask);
@@ -1178,59 +1197,87 @@ struct UpdateMemoryAccessStateFunctor {
     const ResourceUsageTag &tag;
 };
 
-struct ApplyMemoryAccessBarrierFunctor {
+// This functor applies a single barrier, updating the "pending state" in each touched memory range, but does not
+// resolve the pendinging state. Suitable for processing Image and Buffer barriers from PipelineBarriers or Events
+class ApplyBarrierFunctor {
+  public:
     using Iterator = ResourceAccessRangeMap::iterator;
     inline Iterator Infill(ResourceAccessRangeMap *accesses, Iterator pos, ResourceAccessRange range) const { return pos; }
 
     Iterator operator()(ResourceAccessRangeMap *accesses, Iterator pos) const {
         auto &access_state = pos->second;
-        access_state.ApplyMemoryAccessBarrier(false, src_exec_scope, src_access_scope, dst_exec_scope, dst_access_scope);
+        access_state.ApplyBarrier(barrier_, layout_transition_);
         return pos;
     }
 
-    ApplyMemoryAccessBarrierFunctor(VkPipelineStageFlags src_exec_scope_, SyncStageAccessFlags src_access_scope_,
-                                    VkPipelineStageFlags dst_exec_scope_, SyncStageAccessFlags dst_access_scope_)
-        : src_exec_scope(src_exec_scope_),
-          src_access_scope(src_access_scope_),
-          dst_exec_scope(dst_exec_scope_),
-          dst_access_scope(dst_access_scope_) {}
+    ApplyBarrierFunctor(const SyncBarrier &barrier, bool layout_transition)
+        : barrier_(barrier), layout_transition_(layout_transition) {}
 
-    VkPipelineStageFlags src_exec_scope;
-    SyncStageAccessFlags src_access_scope;
-    VkPipelineStageFlags dst_exec_scope;
-    SyncStageAccessFlags dst_access_scope;
+  private:
+    const SyncBarrier barrier_;
+    const bool layout_transition_;
 };
 
-struct ApplyGlobalBarrierFunctor {
+// This functor applies a collection of barriers, updating the "pending state" in each touched memory range, and optionally
+// resolves the pending state. Suitable for processing Global memory barriers, or Subpass Barriers when the "final" barrier
+// of a collection is known/present.
+class ApplyBarrierOpsFunctor {
+  public:
     using Iterator = ResourceAccessRangeMap::iterator;
     inline Iterator Infill(ResourceAccessRangeMap *accesses, Iterator pos, ResourceAccessRange range) const { return pos; }
 
+    struct BarrierOp {
+        SyncBarrier barrier;
+        bool layout_transition;
+        BarrierOp(const SyncBarrier &barrier_, bool layout_transition_)
+            : barrier(barrier_), layout_transition(layout_transition_) {}
+        BarrierOp() = default;
+    };
     Iterator operator()(ResourceAccessRangeMap *accesses, Iterator pos) const {
         auto &access_state = pos->second;
-        access_state.ApplyExecutionBarrier(src_exec_scope, dst_exec_scope);
+        for (const auto op : barrier_ops_) {
+            access_state.ApplyBarrier(op.barrier, op.layout_transition);
+        }
 
-        for (const auto &functor : barrier_functor) {
-            functor(accesses, pos);
+        if (resolve_) {
+            // If this is the last (or only) batch, we can do the pending resolve as the last step in this operation to avoid
+            // another walk
+            access_state.ApplyPendingBarriers(tag_);
         }
         return pos;
     }
 
-    ApplyGlobalBarrierFunctor(VkPipelineStageFlags src_exec_scope, VkPipelineStageFlags dst_exec_scope,
-                              SyncStageAccessFlags src_stage_accesses, SyncStageAccessFlags dst_stage_accesses,
-                              uint32_t memoryBarrierCount, const VkMemoryBarrier *pMemoryBarriers)
-        : src_exec_scope(src_exec_scope), dst_exec_scope(dst_exec_scope) {
-        // Don't want to create this per tracked item, but don't want to loop through all tracked items per barrier...
-        barrier_functor.reserve(memoryBarrierCount);
-        for (uint32_t barrier_index = 0; barrier_index < memoryBarrierCount; barrier_index++) {
-            const auto &barrier = pMemoryBarriers[barrier_index];
-            barrier_functor.emplace_back(src_exec_scope, SyncStageAccess::AccessScope(src_stage_accesses, barrier.srcAccessMask),
-                                         dst_exec_scope, SyncStageAccess::AccessScope(dst_stage_accesses, barrier.dstAccessMask));
+    // A valid tag is required IFF any of the barriers ops are a layout transition, as transitions are write ops
+    ApplyBarrierOpsFunctor(bool resolve, size_t size_hint, const ResourceUsageTag &tag)
+        : resolve_(resolve), barrier_ops_(), tag_(tag) {
+        if (size_hint) {
+            barrier_ops_.reserve(size_hint);
+        }
+    };
+
+    // A valid tag is required IFF layout_transition is true, as transitions are write ops
+    ApplyBarrierOpsFunctor(bool resolve, const std::vector<SyncBarrier> &barriers, bool layout_transition,
+                           const ResourceUsageTag &tag)
+        : resolve_(resolve), barrier_ops_(), tag_(tag) {
+        barrier_ops_.reserve(barriers.size());
+        for (const auto &barrier : barriers) {
+            barrier_ops_.emplace_back(barrier, layout_transition);
         }
     }
 
-    const VkPipelineStageFlags src_exec_scope;
-    const VkPipelineStageFlags dst_exec_scope;
-    std::vector<ApplyMemoryAccessBarrierFunctor> barrier_functor;
+    void PushBack(const SyncBarrier &barrier, bool layout_transition) { barrier_ops_.emplace_back(barrier, layout_transition); }
+
+    void PushBack(const std::vector<SyncBarrier> &barriers, bool layout_transition) {
+        barrier_ops_.reserve(barrier_ops_.size() + barriers.size());
+        for (const auto &barrier : barriers) {
+            barrier_ops_.emplace_back(barrier, layout_transition);
+        }
+    }
+
+  private:
+    bool resolve_;
+    std::vector<BarrierOp> barrier_ops_;
+    const ResourceUsageTag &tag_;
 };
 
 void AccessContext::UpdateAccessState(AddressType type, SyncStageAccessIndex current_usage, const ResourceAccessRange &range,
@@ -1284,15 +1331,15 @@ void AccessContext::UpdateAccessState(const IMAGE_STATE &image, SyncStageAccessI
 }
 
 template <typename Action>
-void AccessContext::UpdateMemoryAccess(const BUFFER_STATE &buffer, const ResourceAccessRange &range, const Action action) {
+void AccessContext::UpdateResourceAccess(const BUFFER_STATE &buffer, const ResourceAccessRange &range, const Action action) {
     if (!SimpleBinding(buffer)) return;
     const auto base_address = ResourceBaseAddress(buffer);
     UpdateMemoryAccessState(&GetAccessStateMap(AddressType::kLinearAddress), (range + base_address), action);
 }
 
 template <typename Action>
-void AccessContext::UpdateMemoryAccess(const IMAGE_STATE &image, const VkImageSubresourceRange &subresource_range,
-                                       const Action action) {
+void AccessContext::UpdateResourceAccess(const IMAGE_STATE &image, const VkImageSubresourceRange &subresource_range,
+                                         const Action action) {
     if (!SimpleBinding(image)) return;
     const auto address_type = ImageAddressType(image);
     auto *accesses = &GetAccessStateMap(address_type);
@@ -1365,41 +1412,11 @@ void AccessContext::ApplyGlobalBarriers(const Action &barrier_action) {
 void AccessContext::ResolveChildContexts(const std::vector<AccessContext> &contexts) {
     for (uint32_t subpass_index = 0; subpass_index < contexts.size(); subpass_index++) {
         auto &context = contexts[subpass_index];
+        ApplyTrackbackBarriersAction barrier_action(context.GetDstExternalTrackBack().barriers);
         for (const auto address_type : kAddressTypes) {
-            context.ResolveAccessRange(address_type, full_range, context.GetDstExternalTrackBack().barriers,
-                                       &GetAccessStateMap(address_type), nullptr, false);
+            context.ResolveAccessRange(address_type, full_range, barrier_action, &GetAccessStateMap(address_type), nullptr, false);
         }
     }
-}
-
-void AccessContext::ApplyImageBarrier(const IMAGE_STATE &image, VkPipelineStageFlags src_exec_scope,
-                                      SyncStageAccessFlags src_access_scope, VkPipelineStageFlags dst_exec_scope,
-                                      SyncStageAccessFlags dst_access_scope, const VkImageSubresourceRange &subresource_range) {
-    const ApplyMemoryAccessBarrierFunctor barrier_action(src_exec_scope, src_access_scope, dst_exec_scope, dst_access_scope);
-    UpdateMemoryAccess(image, subresource_range, barrier_action);
-}
-
-// Note: ImageBarriers do not operate at offset/extent resolution, only at the whole subreources level
-void AccessContext::ApplyImageBarrier(const IMAGE_STATE &image, VkPipelineStageFlags src_exec_scope,
-                                      SyncStageAccessFlags src_access_scope, VkPipelineStageFlags dst_exec_scope,
-                                      SyncStageAccessFlags dst_access_scope, const VkImageSubresourceRange &subresource_range,
-                                      bool layout_transition, const ResourceUsageTag &tag) {
-    if (layout_transition) {
-        UpdateAccessState(image, SYNC_IMAGE_LAYOUT_TRANSITION, subresource_range, VkOffset3D{0, 0, 0}, image.createInfo.extent,
-                          tag);
-        ApplyImageBarrier(image, src_exec_scope, SYNC_IMAGE_LAYOUT_TRANSITION_BIT, dst_exec_scope, dst_access_scope,
-                          subresource_range);
-    } else {
-        ApplyImageBarrier(image, src_exec_scope, src_access_scope, dst_exec_scope, dst_access_scope, subresource_range);
-    }
-}
-
-// Note: ImageBarriers do not operate at offset/extent resolution, only at the whole subreources level
-void AccessContext::ApplyImageBarrier(const IMAGE_STATE &image, const SyncBarrier &barrier,
-                                      const VkImageSubresourceRange &subresource_range, bool layout_transition,
-                                      const ResourceUsageTag &tag) {
-    ApplyImageBarrier(image, barrier.src_exec_scope, barrier.src_access_scope, barrier.dst_exec_scope, barrier.dst_access_scope,
-                      subresource_range, layout_transition, tag);
 }
 
 // Suitable only for *subpass* access contexts
@@ -1426,6 +1443,39 @@ HazardResult AccessContext::DetectSubpassTransitionHazard(const TrackBack &track
     return hazard;
 }
 
+void AccessContext::RecordLayoutTransitions(const RENDER_PASS_STATE &rp_state, uint32_t subpass,
+                                            const std::vector<const IMAGE_VIEW_STATE *> &attachment_views,
+                                            const ResourceUsageTag &tag) {
+    const auto &transitions = rp_state.subpass_transitions[subpass];
+    const ResourceAccessState empty_infill;
+    for (const auto &transition : transitions) {
+        const auto prev_pass = transition.prev_pass;
+        const auto attachment_view = attachment_views[transition.attachment];
+        if (!attachment_view) continue;
+        const auto *image = attachment_view->image_state.get();
+        if (!image) continue;
+        if (!SimpleBinding(*image)) continue;
+
+        const auto *trackback = GetTrackBackFromSubpass(prev_pass);
+        assert(trackback);
+
+        // Import the attachments into the current context
+        const auto *prev_context = trackback->context;
+        assert(prev_context);
+        const auto address_type = ImageAddressType(*image);
+        auto &target_map = GetAccessStateMap(address_type);
+        ApplySubpassTransitionBarriersAction barrier_action(trackback->barriers);
+        prev_context->ResolveAccessRange(*image, attachment_view->normalized_subresource_range, barrier_action, address_type,
+                                         &target_map, &empty_infill);
+    }
+
+    // If there were no transitions skip this global map walk
+    if (transitions.size()) {
+        ApplyBarrierOpsFunctor apply_pending_action(true /* resolve */, 0, tag);
+        ApplyGlobalBarriers(apply_pending_action);
+    }
+}
+
 // Class CommandBufferAccessContext: Keep track of resource access state information for a specific command buffer
 bool CommandBufferAccessContext::ValidateBeginRenderPass(const RENDER_PASS_STATE &rp_state,
 
@@ -1434,35 +1484,35 @@ bool CommandBufferAccessContext::ValidateBeginRenderPass(const RENDER_PASS_STATE
                                                          const char *func_name) const {
     // Check if any of the layout transitions are hazardous.... but we don't have the renderpass context to work with, so we
     bool skip = false;
-    uint32_t subpass = 0;
-    const auto &transitions = rp_state.subpass_transitions[subpass];
-    if (transitions.size()) {
-        const std::vector<AccessContext> empty_context_vector;
-        // Create context we can use to validate against...
-        AccessContext temp_context(subpass, queue_flags_, rp_state.subpass_dependencies, empty_context_vector,
-                                   const_cast<AccessContext *>(&cb_access_context_));
 
-        assert(pRenderPassBegin);
-        if (nullptr == pRenderPassBegin) return skip;
+    assert(pRenderPassBegin);
+    if (nullptr == pRenderPassBegin) return skip;
 
-        const auto fb_state = sync_state_->Get<FRAMEBUFFER_STATE>(pRenderPassBegin->framebuffer);
-        assert(fb_state);
-        if (nullptr == fb_state) return skip;
+    const uint32_t subpass = 0;
 
-        // Create a limited array of views (which we'll need to toss
-        std::vector<const IMAGE_VIEW_STATE *> views;
-        const auto count_attachment = GetFramebufferAttachments(*pRenderPassBegin, *fb_state);
-        const auto attachment_count = count_attachment.first;
-        const auto *attachments = count_attachment.second;
-        views.resize(attachment_count, nullptr);
-        for (const auto &transition : transitions) {
-            assert(transition.attachment < attachment_count);
-            views[transition.attachment] = sync_state_->Get<IMAGE_VIEW_STATE>(attachments[transition.attachment]);
-        }
+    // Construct the state we can use to validate against... (since validation is const and RecordCmdBeginRenderPass
+    // hasn't happened yet)
+    const std::vector<AccessContext> empty_context_vector;
+    AccessContext temp_context(subpass, queue_flags_, rp_state.subpass_dependencies, empty_context_vector,
+                               const_cast<AccessContext *>(&cb_access_context_));
 
-        skip |= temp_context.ValidateLayoutTransitions(*sync_state_, rp_state, pRenderPassBegin->renderArea, 0, views, func_name);
-        skip |= temp_context.ValidateLoadOperation(*sync_state_, rp_state, pRenderPassBegin->renderArea, 0, views, func_name);
+    // Create a view list
+    const auto fb_state = sync_state_->Get<FRAMEBUFFER_STATE>(pRenderPassBegin->framebuffer);
+    assert(fb_state);
+    if (nullptr == fb_state) return skip;
+    // NOTE: Must not use COMMAND_BUFFER_STATE variant of this as RecordCmdBeginRenderPass hasn't run and thus
+    //       the activeRenderPass.* fields haven't been set.
+    const auto views = sync_state_->GetAttachmentViews(*pRenderPassBegin, *fb_state);
+
+    // Validate transitions
+    skip |= temp_context.ValidateLayoutTransitions(*sync_state_, rp_state, pRenderPassBegin->renderArea, subpass, views, func_name);
+
+    // Validate load operations if there were no layout transition hazards
+    if (!skip) {
+        temp_context.RecordLayoutTransitions(rp_state, subpass, views, kCurrentCommandTag);
+        skip |= temp_context.ValidateLoadOperation(*sync_state_, rp_state, pRenderPassBegin->renderArea, subpass, views, func_name);
     }
+
     return skip;
 }
 
@@ -1999,7 +2049,14 @@ bool RenderPassAccessContext::ValidateNextSubpass(const SyncValidator &sync_stat
     const auto next_subpass = current_subpass_ + 1;
     const auto &next_context = subpass_contexts_[next_subpass];
     skip |= next_context.ValidateLayoutTransitions(sync_state, *rp_state_, render_area, next_subpass, attachment_views_, func_name);
-    skip |= next_context.ValidateLoadOperation(sync_state, *rp_state_, render_area, next_subpass, attachment_views_, func_name);
+    if (!skip) {
+        // To avoid complex (and buggy) duplication of the affect of layout transitions on load operations, we'll record them
+        // on a copy of the (empty) next context.
+        // Note: The resource access map should be empty so hopefully this copy isn't too horrible from a perf POV.
+        AccessContext temp_context(next_context);
+        temp_context.RecordLayoutTransitions(*rp_state_, next_subpass, attachment_views_, kCurrentCommandTag);
+        skip |= temp_context.ValidateLoadOperation(sync_state, *rp_state_, render_area, next_subpass, attachment_views_, func_name);
+    }
     return skip;
 }
 bool RenderPassAccessContext::ValidateEndRenderPass(const SyncValidator &sync_state, const VkRect2D &render_area,
@@ -2064,32 +2121,7 @@ bool RenderPassAccessContext::ValidateFinalSubpassLayoutTransitions(const SyncVa
 
 void RenderPassAccessContext::RecordLayoutTransitions(const ResourceUsageTag &tag) {
     // Add layout transitions...
-    const auto &transitions = rp_state_->subpass_transitions[current_subpass_];
-    auto &subpass_context = subpass_contexts_[current_subpass_];
-    std::set<const IMAGE_VIEW_STATE *> view_seen;
-    for (const auto &transition : transitions) {
-        const auto attachment_view = attachment_views_[transition.attachment];
-        if (!attachment_view) continue;
-        const auto image = attachment_view->image_state.get();
-        if (!image) continue;
-
-        const auto *trackback = subpass_context.GetTrackBackFromSubpass(transition.prev_pass);
-        assert(trackback);
-        const auto merged_barrier = MergeBarriers(trackback->barriers);
-        auto insert_pair = view_seen.insert(attachment_view);
-        if (insert_pair.second) {
-            // We haven't recorded the transistion yet, so treat this as a normal barrier with transistion.
-            subpass_context.ApplyImageBarrier(*image, merged_barrier, attachment_view->normalized_subresource_range, true, tag);
-
-        } else {
-            // We've recorded the transition, but we need to added on the additional dest barriers, and rerecording the transition
-            // would clear out the prior barrier flags, so apply this as a *non* transition barrier
-            auto barrier_to_transition = merged_barrier;
-            barrier_to_transition.src_access_scope |= SYNC_IMAGE_LAYOUT_TRANSITION_BIT;
-            subpass_context.ApplyImageBarrier(*image, barrier_to_transition, attachment_view->normalized_subresource_range, false,
-                                              tag);
-        }
-    }
+    subpass_contexts_[current_subpass_].RecordLayoutTransitions(*rp_state_, current_subpass_, attachment_views_, tag);
 }
 
 void RenderPassAccessContext::RecordLoadOperations(const VkRect2D &render_area, const ResourceUsageTag &tag) {
@@ -2167,15 +2199,16 @@ void RenderPassAccessContext::RecordEndRenderPass(AccessContext *external_contex
 
     // Add the "finalLayout" transitions to external
     // Get them from where there we're hidding in the extra entry.
+    // Not that since *final* always comes from *one* subpass per view, we don't have to accumulate the barriers
+    // TODO Aliasing we may need to reconsider barrier accumulation... though I don't know that it would be valid for aliasing
+    //      that had mulitple final layout transistions from mulitple final subpasses.
     const auto &final_transitions = rp_state_->subpass_transitions.back();
     for (const auto &transition : final_transitions) {
         const auto &attachment = attachment_views_[transition.attachment];
         const auto &last_trackback = subpass_contexts_[transition.prev_pass].GetDstExternalTrackBack();
         assert(&subpass_contexts_[transition.prev_pass] == last_trackback.context);
-        // Since this is a layout transition vs. a subpass, we can safely merge the barriers, as there are no
-        // chaining effects after the layout transition (write operation) nukes the prior depenency chains
-        external_context->ApplyImageBarrier(*attachment->image_state, MergeBarriers(last_trackback.barriers),
-                                            attachment->normalized_subresource_range, true, tag);
+        ApplyBarrierOpsFunctor barrier_ops(true /* resolve */, last_trackback.barriers, true /* layout transition */, tag);
+        external_context->UpdateResourceAccess(*attachment->image_state, attachment->normalized_subresource_range, barrier_ops);
     }
 }
 
@@ -2188,25 +2221,31 @@ SyncBarrier::SyncBarrier(VkQueueFlags queue_flags, const VkSubpassDependency2 &b
     dst_access_scope = SyncStageAccess::AccessScope(dst_stage_mask, barrier.dstAccessMask);
 }
 
-void ResourceAccessState::ApplyBarriers(const std::vector<SyncBarrier> &barriers) {
+// Apply a list of barriers, without resolving pending state, useful for subpass layout transitions
+void ResourceAccessState::ApplyBarriers(const std::vector<SyncBarrier> &barriers, bool layout_transition) {
     for (const auto &barrier : barriers) {
-        ApplyMemoryAccessBarrier(true, barrier.src_exec_scope, barrier.src_access_scope, barrier.dst_exec_scope,
-                                 barrier.dst_access_scope);
+        ApplyBarrier(barrier, layout_transition);
     }
-    ApplyExecutionBarriers(barriers);
 }
 
+// ApplyBarriers is design for *fully* inclusive barrier lists without layout tranistions.  Designed use was for
+// inter-subpass barriers for lazy-evaluation of parent context memory ranges.  Subpass layout transistions are *not* done
+// lazily, s.t. no previous access reports should need layout transitions.
+void ResourceAccessState::ApplyBarriers(const std::vector<SyncBarrier> &barriers, const ResourceUsageTag &tag) {
+    assert(!pending_layout_transition);  // This should never be call in the middle of another barrier application
+    assert(!pending_write_barriers);
+    assert(!pending_write_dep_chain);
+    for (const auto &barrier : barriers) {
+        ApplyBarrier(barrier, false);
+    }
+    ApplyPendingBarriers(tag);
+}
 HazardResult ResourceAccessState::DetectHazard(SyncStageAccessIndex usage_index) const {
     HazardResult hazard;
     auto usage = FlagBit(usage_index);
     const auto usage_stage = PipelineStageBit(usage_index);
     if (IsRead(usage)) {
-        // Only check reads vs. last_write if it doesn't happen-after any other read because either:
-        //    * the previous reads are not hazards, and thus last_write must be visible and available to
-        //      any reads that happen after.
-        //    * the previous reads *are* hazards to last_write, have been reported, and if that hazard is fixed
-        //      the current read will be also not be a hazard, thus reporting a hazard here adds no needed information.
-        if (((usage_stage & read_execution_barriers) == 0) && last_write && IsWriteHazard(usage)) {
+        if (IsRAWHazard(usage_stage, usage)) {
             hazard.Set(this, usage_index, READ_AFTER_WRITE, last_write, write_tag);
         }
     } else {
@@ -2227,11 +2266,7 @@ HazardResult ResourceAccessState::DetectHazard(SyncStageAccessIndex usage_index)
                     break;
                 }
             }
-        } else if (input_attachment_barriers != kNoAttachmentRead) {
-            if (IsReadHazard(usage_stage, input_attachment_barriers)) {
-                hazard.Set(this, usage_index, WRITE_AFTER_READ, SYNC_FRAGMENT_SHADER_INPUT_ATTACHMENT_READ, input_attachment_tag);
-            }
-        } else if (last_write && IsWriteHazard(usage)) {
+        } else if (last_write.any() && IsWriteHazard(usage)) {
             // Write-After-Write check -- if we have a previous write to test against
             hazard.Set(this, usage_index, WRITE_AFTER_WRITE, last_write, write_tag);
         }
@@ -2242,50 +2277,54 @@ HazardResult ResourceAccessState::DetectHazard(SyncStageAccessIndex usage_index)
 HazardResult ResourceAccessState::DetectHazard(SyncStageAccessIndex usage_index, const SyncOrderingBarrier &ordering) const {
     // The ordering guarantees act as barriers to the last accesses, independent of synchronization operations
     HazardResult hazard;
-    const auto usage = FlagBit(usage_index);
+    const auto usage_bit = FlagBit(usage_index);
     const auto usage_stage = PipelineStageBit(usage_index);
-    const bool write_is_ordered = (last_write & ordering.access_scope) == last_write;  // Is true if no write, and that's good.
-    if (IsRead(usage)) {
-        if (!write_is_ordered) {
-            // Only check for RAW if the write is unordered, and there are no reads ordered before the current read since last_write
-            // See DetectHazard(SyncStagetAccessIndex) above for more details.
-            // We need to assemble the effect read_execution barriers from the union of the state barriers and the ordering rules
-            // Check to see if there are any reads ordered before usage, including ordering rules and barriers.
-            bool ordered_read = 0 != ((last_read_stages & ordering.exec_scope) | (read_execution_barriers & usage_stage));
-            // Noting the "special* encoding of the input attachment ordering rule (in access, but not exec)
-            if ((ordering.access_scope & SyncStageAccessFlagBits::SYNC_FRAGMENT_SHADER_INPUT_ATTACHMENT_READ_BIT) &&
-                (input_attachment_barriers != kNoAttachmentRead)) {
-                ordered_read = true;
-            }
-
-            if (!ordered_read && IsWriteHazard(usage)) {
-                hazard.Set(this, usage_index, READ_AFTER_WRITE, last_write, write_tag);
+    const bool input_attachment_ordering = (ordering.access_scope & SYNC_FRAGMENT_SHADER_INPUT_ATTACHMENT_READ_BIT).any();
+    const bool last_write_is_ordered = (last_write & ordering.access_scope).any();
+    if (IsRead(usage_bit)) {
+        // Exclude RAW if no write, or write not most "most recent" operation w.r.t. usage;
+        bool is_raw_hazard = IsRAWHazard(usage_stage, usage_bit);
+        if (is_raw_hazard) {
+            // NOTE: we know last_write is non-zero
+            // See if the ordering rules save us from the simple RAW check above
+            // First check to see if the current usage is covered by the ordering rules
+            const bool usage_is_input_attachment = (usage_index == SYNC_FRAGMENT_SHADER_INPUT_ATTACHMENT_READ);
+            const bool usage_is_ordered =
+                (input_attachment_ordering && usage_is_input_attachment) || (0 != (usage_stage & ordering.exec_scope));
+            if (usage_is_ordered) {
+                // Now see of the most recent write (or a subsequent read) are ordered
+                const bool most_recent_is_ordered = last_write_is_ordered || (0 != GetOrderedStages(ordering));
+                is_raw_hazard = !most_recent_is_ordered;
             }
         }
-
+        if (is_raw_hazard) {
+            hazard.Set(this, usage_index, READ_AFTER_WRITE, last_write, write_tag);
+        }
     } else {
         // Only check for WAW if there are no reads since last_write
+        bool usage_write_is_ordered = (usage_bit & ordering.access_scope).any();
         if (last_read_count) {
-            // Ignore ordered read stages (which represent frame-buffer local operations, except input attachment
-            const auto unordered_reads = last_read_stages & ~ordering.exec_scope;
             // Look for any WAR hazards outside the ordered set of stages
-            for (uint32_t read_index = 0; read_index < last_read_count; read_index++) {
-                const auto &read_access = last_reads[read_index];
-                if ((read_access.stage & unordered_reads) && IsReadHazard(usage_stage, read_access)) {
-                    hazard.Set(this, usage_index, WRITE_AFTER_READ, read_access.access, read_access.tag);
-                    break;
+            VkPipelineStageFlags ordered_stages = 0;
+            if (usage_write_is_ordered) {
+                // If the usage is ordered, we can ignore all ordered read stages w.r.t. WAR)
+                ordered_stages = GetOrderedStages(ordering);
+            }
+            // If we're tracking any reads that aren't ordered against the current write, got to check 'em all.
+            if ((ordered_stages & last_read_stages) != last_read_stages) {
+                for (uint32_t read_index = 0; read_index < last_read_count; read_index++) {
+                    const auto &read_access = last_reads[read_index];
+                    if (read_access.stage & ordered_stages) continue;  // but we can skip the ordered ones
+                    if (IsReadHazard(usage_stage, read_access)) {
+                        hazard.Set(this, usage_index, WRITE_AFTER_READ, read_access.access, read_access.tag);
+                        break;
+                    }
                 }
             }
-        } else if (input_attachment_barriers != kNoAttachmentRead) {
-            // This is special case code for the fragment shader input attachment, which unlike all other fragment shader operations
-            // is framebuffer local, and thus subject to raster ordering guarantees
-            if (0 == (ordering.access_scope & SyncStageAccessFlagBits::SYNC_FRAGMENT_SHADER_INPUT_ATTACHMENT_READ_BIT)) {
-                // NOTE: Currently all ordering barriers include this bit, so this code may never be reached, but it's
-                //       here s.t. if we need to change the ordering barrier/rules we needn't change the code.
-                hazard.Set(this, usage_index, WRITE_AFTER_READ, SYNC_FRAGMENT_SHADER_INPUT_ATTACHMENT_READ, input_attachment_tag);
+        } else if (!(last_write_is_ordered && usage_write_is_ordered)) {
+            if (last_write.any() && IsWriteHazard(usage_bit)) {
+                hazard.Set(this, usage_index, WRITE_AFTER_WRITE, last_write, write_tag);
             }
-        } else if (!write_is_ordered && IsWriteHazard(usage)) {
-            hazard.Set(this, usage_index, WRITE_AFTER_WRITE, last_write, write_tag);
         }
     }
     return hazard;
@@ -2303,16 +2342,15 @@ HazardResult ResourceAccessState::DetectAsyncHazard(SyncStageAccessIndex usage_i
         if (last_write != 0) {
             hazard.Set(this, usage_index, WRITE_RACING_WRITE, last_write, write_tag);
         } else if (last_read_count > 0) {
+            // Any read could be reported, so we'll just pick the first one arbitrarily
             hazard.Set(this, usage_index, WRITE_RACING_READ, last_reads[0].access, last_reads[0].tag);
-        } else if (input_attachment_barriers != kNoAttachmentRead) {
-            hazard.Set(this, usage_index, WRITE_RACING_READ, SYNC_FRAGMENT_SHADER_INPUT_ATTACHMENT_READ, input_attachment_tag);
         }
     }
     return hazard;
 }
 
 HazardResult ResourceAccessState::DetectBarrierHazard(SyncStageAccessIndex usage_index, VkPipelineStageFlags src_exec_scope,
-                                                      SyncStageAccessFlags src_access_scope) const {
+                                                      const SyncStageAccessFlags& src_access_scope) const {
     // Only supporting image layout transitions for now
     assert(usage_index == SyncStageAccessIndex::SYNC_IMAGE_LAYOUT_TRANSITION);
     HazardResult hazard;
@@ -2330,12 +2368,7 @@ HazardResult ResourceAccessState::DetectBarrierHazard(SyncStageAccessIndex usage
                 break;
             }
         }
-    } else if (input_attachment_barriers != kNoAttachmentRead) {
-        // Same logic as read acces above for the special case of input attachment read
-        if ((src_exec_scope & (VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | input_attachment_barriers)) == 0) {
-            hazard.Set(this, usage_index, WRITE_AFTER_READ, SYNC_FRAGMENT_SHADER_INPUT_ATTACHMENT_READ_BIT, input_attachment_tag);
-        }
-    } else if (last_write) {
+    } else if (last_write.any()) {
         // If the previous write is *not* in the 1st access scope
         // *AND* the current barrier is not in the dependency chain
         // *AND* the there is no prior memory barrier for the previous write in the dependency chain
@@ -2354,40 +2387,48 @@ HazardResult ResourceAccessState::DetectBarrierHazard(SyncStageAccessIndex usage
 // exists, but if you fix *that* hazard it either fixes or unmasks the subsequent ones.
 void ResourceAccessState::Resolve(const ResourceAccessState &other) {
     if (write_tag.IsBefore(other.write_tag)) {
-        // If this is a later write, we've reported any exsiting hazard, and we can just overwrite as the more recent operation
+        // If this is a later write, we've reported any exsiting hazard, and we can just overwrite as the more recent
+        // operation
         *this = other;
     } else if (!other.write_tag.IsBefore(write_tag)) {
         // This is the *equals* case for write operations, we merged the write barriers and the read state (but without the
         // dependency chaining logic or any stage expansion)
         write_barriers |= other.write_barriers;
+        pending_write_barriers |= other.pending_write_barriers;
+        pending_layout_transition |= other.pending_layout_transition;
+        pending_write_dep_chain |= other.pending_write_dep_chain;
 
         // Merge the read states
-        if (input_attachment_barriers == kNoAttachmentRead) {
-            // this doesn't have an input attachment read, so we'll take other, unconditionally (even if it's kNoAttachmentRead)
-            input_attachment_barriers = other.input_attachment_barriers;
-            input_attachment_tag = other.input_attachment_tag;
-        } else if (other.input_attachment_barriers != kNoAttachmentRead) {
-            // Both states have an input attachment read, pick the newest tag and merge barriers.
-            if (input_attachment_tag.IsBefore(other.input_attachment_tag)) {
-                input_attachment_tag = other.input_attachment_tag;
-            }
-            input_attachment_barriers |= other.input_attachment_barriers;
-        }
-        // The else clause is that only this has an attachment read and no merge is needed
-
+        const auto pre_merge_count = last_read_count;
+        const auto pre_merge_stages = last_read_stages;
         for (uint32_t other_read_index = 0; other_read_index < other.last_read_count; other_read_index++) {
             auto &other_read = other.last_reads[other_read_index];
-            if (last_read_stages & other_read.stage) {
+            if (pre_merge_stages & other_read.stage) {
                 // Merge in the barriers for read stages that exist in *both* this and other
-                // TODO: This is N^2 with stages... perhaps the ReadStates should be by stage index.
-                for (uint32_t my_read_index = 0; my_read_index < last_read_count; my_read_index++) {
+                // TODO: This is N^2 with stages... perhaps the ReadStates should be sorted by stage index.
+                //       but we should wait on profiling data for that.
+                for (uint32_t my_read_index = 0; my_read_index < pre_merge_count; my_read_index++) {
                     auto &my_read = last_reads[my_read_index];
                     if (other_read.stage == my_read.stage) {
                         if (my_read.tag.IsBefore(other_read.tag)) {
-                            my_read.tag = other_read.tag;
+                            // Other is more recent, copy in the state
                             my_read.access = other_read.access;
+                            my_read.tag = other_read.tag;
+                            my_read.pending_dep_chain = other_read.pending_dep_chain;
+                            // TODO: Phase 2 -- review the state merge logic to avoid false positive from overwriting the barriers
+                            //                  May require tracking more than one access per stage.
+                            my_read.barriers = other_read.barriers;
+                            if (my_read.stage == VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT) {
+                                // Since I'm overwriting the fragement stage read, also update the input attachment info
+                                // as this is the only stage that affects it.
+                                input_attachment_read = other.input_attachment_read;
+                            }
+                        } else if (other_read.tag.IsBefore(my_read.tag)) {
+                            // The read tags match so merge the barriers
+                            my_read.barriers |= other_read.barriers;
+                            my_read.pending_dep_chain |= other_read.pending_dep_chain;
                         }
-                        my_read.barriers |= other_read.barriers;
+
                         break;
                     }
                 }
@@ -2396,157 +2437,171 @@ void ResourceAccessState::Resolve(const ResourceAccessState &other) {
                 last_reads[last_read_count] = other_read;
                 last_read_count++;
                 last_read_stages |= other_read.stage;
+                if (other_read.stage == VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT) {
+                    input_attachment_read = other.input_attachment_read;
+                }
             }
         }
         read_execution_barriers |= other.read_execution_barriers;
-    }  // the else clause would be that other write is before this write... in which case we supercede the other state and ignore
-       // it.
+    }  // the else clause would be that other write is before this write... in which case we supercede the other state and
+       // ignore it.
 }
 
 void ResourceAccessState::Update(SyncStageAccessIndex usage_index, const ResourceUsageTag &tag) {
     // Move this logic in the ResourceStateTracker as methods, thereof (or we'll repeat it for every flavor of resource...
     const auto usage_bit = FlagBit(usage_index);
-    if (usage_bit == SYNC_FRAGMENT_SHADER_INPUT_ATTACHMENT_READ_BIT) {
-        // Input attachment requires special treatment for raster/load/store ordering guarantees
-        input_attachment_barriers = 0;
-        input_attachment_tag = tag;
-    } else if (IsRead(usage_index)) {
+    if (IsRead(usage_index)) {
         // Mulitple outstanding reads may be of interest and do dependency chains independently
         // However, for purposes of barrier tracking, only one read per pipeline stage matters
         const auto usage_stage = PipelineStageBit(usage_index);
+        uint32_t update_index = kStageCount;
         if (usage_stage & last_read_stages) {
             for (uint32_t read_index = 0; read_index < last_read_count; read_index++) {
-                ReadState &access = last_reads[read_index];
-                if (access.stage == usage_stage) {
-                    access.access = usage_bit;
-                    access.barriers = 0;
-                    access.tag = tag;
+                if (last_reads[read_index].stage == usage_stage) {
+                    update_index = read_index;
                     break;
                 }
             }
+            assert(update_index < last_read_count);
         } else {
-            // We don't have this stage in the list yet...
             assert(last_read_count < last_reads.size());
-            ReadState &access = last_reads[last_read_count++];
-            access.stage = usage_stage;
-            access.access = usage_bit;
-            access.barriers = 0;
-            access.tag = tag;
+            update_index = last_read_count++;
             last_read_stages |= usage_stage;
+        }
+        last_reads[update_index].Set(usage_stage, usage_bit, 0, tag);
+
+        // Fragment shader reads come in two flavors, and we need to track if the one we're tracking is the special one.
+        if (usage_stage == VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT) {
+            // TODO Revisit re: multiple reads for a given stage
+            input_attachment_read = (usage_bit == SYNC_FRAGMENT_SHADER_INPUT_ATTACHMENT_READ_BIT);
         }
     } else {
         // Assume write
         // TODO determine what to do with READ-WRITE operations if any
-        // Clobber last read and all barriers... because all we have is DANGER, DANGER, WILL ROBINSON!!!
-        // if the last_reads/last_write were unsafe, we've reported them,
-        // in either case the prior access is irrelevant, we can overwrite them as *this* write is now after them
-        last_read_count = 0;
-        last_read_stages = 0;
-        read_execution_barriers = 0;
-
-        input_attachment_barriers = kNoAttachmentRead;  // Denotes no outstanding input attachment read after the last write.
-        // NOTE: we don't reset the tag, as the equality check ignores it when kNoAttachmentRead is set.
-
-        write_barriers = 0;
-        write_dependency_chain = 0;
-        write_tag = tag;
-        last_write = usage_bit;
+        SetWrite(usage_bit, tag);
     }
 }
 
-// TODO: Leave "old style" execution barrier code until PipelineBarrier is corrected for true unordered barrier application
-void ResourceAccessState::ApplyExecutionBarrier(VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask) {
-    // Execution Barriers only protect read operations
-    for (uint32_t read_index = 0; read_index < last_read_count; read_index++) {
-        ReadState &access = last_reads[read_index];
-        // The | implements the "dependency chain" logic for this access, as the barriers field stores the second sync scope
-        if (srcStageMask & (access.stage | access.barriers)) {
-            access.barriers |= dstStageMask;
-            read_execution_barriers |= dstStageMask;
-        }
-    }
-    if ((input_attachment_barriers != kNoAttachmentRead) &&
-        (srcStageMask & (VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | input_attachment_barriers))) {
-        input_attachment_barriers |= dstStageMask;
-        read_execution_barriers |= dstStageMask;
-    }
-    if (write_dependency_chain & srcStageMask) {
-        write_dependency_chain |= dstStageMask;
-    }
+// Clobber last read and all barriers... because all we have is DANGER, DANGER, WILL ROBINSON!!!
+// if the last_reads/last_write were unsafe, we've reported them, in either case the prior access is irrelevant.
+// We can overwrite them as *this* write is now after them.
+//
+// Note: intentionally ignore pending barriers and chains (i.e. don't apply or clear them), let ApplyPendingBarriers handle them.
+void ResourceAccessState::SetWrite(const SyncStageAccessFlags& usage_bit, const ResourceUsageTag &tag) {
+    last_read_count = 0;
+    last_read_stages = 0;
+    read_execution_barriers = 0;
+    input_attachment_read = false;  // Denotes no outstanding input attachment read after the last write.
+
+    write_barriers = 0;
+    write_dependency_chain = 0;
+    write_tag = tag;
+    last_write = usage_bit;
 }
 
-void ResourceAccessState::ApplyExecutionBarriers(const std::vector<SyncBarrier> &barriers) {
-    // Since all execution chains are unordered, apply before update, accumulating update in pending_
-    // s.t. we don't create unintended dependency chaings.
-    // For reads the barriers function as the dependency chain
-    VkPipelineStageFlags pending_write_chain = 0;
-    VkPipelineStageFlags pending_input_attacment_barriers = 0;
-    std::array<VkPipelineStageFlags, kStageCount> pending_read_barriers;
-    for (uint32_t read_index = 0; read_index < last_read_count; read_index++) {
-        pending_read_barriers[read_index] = 0;
+// Apply the memory barrier without updating the existing barriers.  The execution barrier
+// changes the "chaining" state, but to keep barriers independent, we defer this until all barriers
+// of the batch have been processed. Also, depending on whether layout transition happens, we'll either
+// replace the current write barriers or add to them, so accumulate to pending as well.
+void ResourceAccessState::ApplyBarrier(const SyncBarrier &barrier, bool layout_transition) {
+    // For independent barriers we need to track what the new barriers and dependency chain *will* be when we're done
+    // applying the memory barriers
+    // NOTE: We update the write barrier if the write is in the first access scope or if there is a layout
+    //       transistion, under the theory of "most recent access".  If the read/write *isn't* safe
+    //       vs. this layout transition DetectBarrierHazard should report it.  We treat the layout
+    //       transistion *as* a write and in scope with the barrier (it's before visibility).
+    if (layout_transition || InSourceScopeOrChain(barrier.src_exec_scope, barrier.src_access_scope)) {
+        pending_write_barriers |= barrier.dst_access_scope;
+        pending_write_dep_chain |= barrier.dst_exec_scope;
     }
+    // Track layout transistion as pending as we can't modify last_write until all barriers processed
+    pending_layout_transition |= layout_transition;
 
-    for (const auto &barrier : barriers) {
-        const VkPipelineStageFlags src_scope = barrier.src_exec_scope;
-        const VkPipelineStageFlags dst_scope = barrier.dst_exec_scope;
-        // Execution Barriers only protect read operations
+    if (!pending_layout_transition) {
+        // Once we're dealing with a layout transition (which is modelled as a *write*) then the last reads/writes/chains
+        // don't need to be tracked as we're just going to zero them.
         for (uint32_t read_index = 0; read_index < last_read_count; read_index++) {
-            const ReadState &access = last_reads[read_index];
+            ReadState &access = last_reads[read_index];
             // The | implements the "dependency chain" logic for this access, as the barriers field stores the second sync scope
-            if (src_scope & (access.stage | access.barriers)) {
-                pending_read_barriers[read_index] |= dst_scope;
+            if (barrier.src_exec_scope & (access.stage | access.barriers)) {
+                access.pending_dep_chain |= barrier.dst_exec_scope;
             }
         }
-        if ((input_attachment_barriers != kNoAttachmentRead) &&
-            (src_scope & (VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | input_attachment_barriers))) {
-            pending_input_attacment_barriers |= dst_scope;
-        }
-        if (InSourceScopeOrChain(src_scope, barrier.src_access_scope)) {
-            pending_write_chain |= dst_scope;
-        }
     }
-
-    // Apply accumulated pending changes to the depenendency chains and barriers
-    for (uint32_t read_index = 0; read_index < last_read_count; read_index++) {
-        last_reads[read_index].barriers |= pending_read_barriers[read_index];
-        read_execution_barriers |= pending_read_barriers[read_index];
-    }
-    input_attachment_barriers |= pending_input_attacment_barriers;
-    read_execution_barriers |= pending_input_attacment_barriers;
-    write_dependency_chain |= pending_write_chain;
 }
 
-void ResourceAccessState::ApplyMemoryAccessBarrier(bool multi_dep, VkPipelineStageFlags src_exec_scope,
-                                                   SyncStageAccessFlags src_access_scope, VkPipelineStageFlags dst_exec_scope,
-                                                   SyncStageAccessFlags dst_access_scope) {
-    // We update just the write barrier side of the execution and memory barrier.  Updating the dependency chain would
-    // create chaining between batches of barriers, which isn't wasn't intended.
-    // The callers is responsible for coming back and updating the dependency chain information after the memory access
-    // batch is complete.
-    // The || implements the "dependency chain" logic for this barrier
-    if (InSourceScopeOrChain(src_exec_scope, src_access_scope)) {
-        write_barriers |= dst_access_scope;
-        if (!multi_dep) {
-            write_dependency_chain |= dst_exec_scope;
-        }
+void ResourceAccessState::ApplyPendingBarriers(const ResourceUsageTag &tag) {
+    if (pending_layout_transition) {
+        // SetWrite clobbers the read count, and thus we don't have to clear the read_state out.
+        SetWrite(SYNC_IMAGE_LAYOUT_TRANSITION_BIT, tag);  // Side effect notes below
+        pending_layout_transition = false;
     }
+
+    // Apply the accumulate execution barriers (and thus update chaining information)
+    // for layout transition, read count is zeroed by SetWrite, so this will be skipped.
+    for (uint32_t read_index = 0; read_index < last_read_count; read_index++) {
+        ReadState &access = last_reads[read_index];
+        access.barriers |= access.pending_dep_chain;
+        read_execution_barriers |= access.barriers;
+        access.pending_dep_chain = 0;
+    }
+
+    // We OR in the accumulated write chain and barriers even in the case of a layout transition as SetWrite zeros them.
+    write_dependency_chain |= pending_write_dep_chain;
+    write_barriers |= pending_write_barriers;
+    pending_write_dep_chain = 0;
+    pending_write_barriers = 0;
 }
 
 // This should be just Bits or Index, but we don't have an invalid state for Index
-VkPipelineStageFlags ResourceAccessState::GetReadBarriers(SyncStageAccessFlags usage_bit) const {
+VkPipelineStageFlags ResourceAccessState::GetReadBarriers(const SyncStageAccessFlags& usage_bit) const {
     VkPipelineStageFlags barriers = 0U;
-    if (usage_bit & SYNC_FRAGMENT_SHADER_INPUT_ATTACHMENT_READ_BIT) {
-        barriers = input_attachment_barriers;
-    } else {
-        for (uint32_t read_index = 0; read_index < last_read_count; read_index++) {
-            const auto &read_access = last_reads[read_index];
-            if (read_access.access & usage_bit) {
-                barriers = read_access.barriers;
-                break;
-            }
+
+    for (uint32_t read_index = 0; read_index < last_read_count; read_index++) {
+        const auto &read_access = last_reads[read_index];
+        if ((read_access.access & usage_bit).any()) {
+            barriers = read_access.barriers;
+            break;
         }
     }
+
     return barriers;
+}
+
+inline bool ResourceAccessState::IsRAWHazard(VkPipelineStageFlagBits usage_stage, const SyncStageAccessFlags& usage) const {
+    assert(IsRead(usage));
+    // Only RAW vs. last_write if it doesn't happen-after any other read because either:
+    //    * the previous reads are not hazards, and thus last_write must be visible and available to
+    //      any reads that happen after.
+    //    * the previous reads *are* hazards to last_write, have been reported, and if that hazard is fixed
+    //      the current read will be also not be a hazard, thus reporting a hazard here adds no needed information.
+    return last_write.any() && (0 == (read_execution_barriers & usage_stage)) && IsWriteHazard(usage);
+}
+
+VkPipelineStageFlags ResourceAccessState::GetOrderedStages(const SyncOrderingBarrier &ordering) const {
+    // Whether the stage are in the ordering scope only matters if the current write is ordered
+    VkPipelineStageFlags ordered_stages = last_read_stages & ordering.exec_scope;
+    // Special input attachment handling as always (not encoded in exec_scop)
+    const bool input_attachment_ordering = (ordering.access_scope & SYNC_FRAGMENT_SHADER_INPUT_ATTACHMENT_READ_BIT).any();
+    if (input_attachment_ordering && input_attachment_read) {
+        // If we have an input attachment in last_reads and input attachments are ordered we all that stage
+        ordered_stages |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    }
+
+    return ordered_stages;
+}
+
+inline ResourceAccessState::ReadState *ResourceAccessState::GetReadStateForStage(VkPipelineStageFlagBits stage,
+                                                                                 uint32_t search_limit) {
+    ReadState *read_state = nullptr;
+    search_limit = std::min(search_limit, last_read_count);
+    for (uint32_t i = 0; i < search_limit; i++) {
+        if (last_reads[i].stage == stage) {
+            read_state = &last_reads[i];
+            break;
+        }
+    }
+    return read_state;
 }
 
 void SyncValidator::ResetCommandBufferCallback(VkCommandBuffer command_buffer) {
@@ -2564,19 +2619,27 @@ void SyncValidator::FreeCommandBufferCallback(VkCommandBuffer command_buffer) {
     }
 }
 
-void SyncValidator::ApplyGlobalBarriers(AccessContext *context, VkPipelineStageFlags srcStageMask,
-                                        VkPipelineStageFlags dstStageMask, SyncStageAccessFlags src_access_scope,
-                                        SyncStageAccessFlags dst_access_scope, uint32_t memoryBarrierCount,
-                                        const VkMemoryBarrier *pMemoryBarriers) {
-    // TODO: Implement this better (maybe some delayed/on-demand integration).
-    ApplyGlobalBarrierFunctor barriers_functor(srcStageMask, dstStageMask, src_access_scope, dst_access_scope, memoryBarrierCount,
-                                               pMemoryBarriers);
+void SyncValidator::ApplyGlobalBarriers(AccessContext *context, VkPipelineStageFlags src_exec_scope,
+                                        VkPipelineStageFlags dst_exec_scope, SyncStageAccessFlags src_access_scope,
+                                        SyncStageAccessFlags dst_access_scope, uint32_t memory_barrier_count,
+                                        const VkMemoryBarrier *pMemoryBarriers, const ResourceUsageTag &tag) {
+    ApplyBarrierOpsFunctor barriers_functor(true /* resolve */, std::min<uint32_t>(1, memory_barrier_count), tag);
+    for (uint32_t barrier_index = 0; barrier_index < memory_barrier_count; barrier_index++) {
+        const auto &barrier = pMemoryBarriers[barrier_index];
+        SyncBarrier sync_barrier(src_exec_scope, SyncStageAccess::AccessScope(src_access_scope, barrier.srcAccessMask),
+                                 dst_exec_scope, SyncStageAccess::AccessScope(dst_access_scope, barrier.dstAccessMask));
+        barriers_functor.PushBack(sync_barrier, false);
+    }
+    if (0 == memory_barrier_count) {
+        // If there are no global memory barriers, force an exec barrier
+        barriers_functor.PushBack(SyncBarrier(src_exec_scope, 0, dst_exec_scope, 0), false);
+    }
     context->ApplyGlobalBarriers(barriers_functor);
 }
 
 void SyncValidator::ApplyBufferBarriers(AccessContext *context, VkPipelineStageFlags src_exec_scope,
-                                        SyncStageAccessFlags src_stage_accesses, VkPipelineStageFlags dst_exec_scope,
-                                        SyncStageAccessFlags dst_stage_accesses, uint32_t barrier_count,
+                                        const SyncStageAccessFlags& src_stage_accesses, VkPipelineStageFlags dst_exec_scope,
+                                        const SyncStageAccessFlags& dst_stage_accesses, uint32_t barrier_count,
                                         const VkBufferMemoryBarrier *barriers) {
     for (uint32_t index = 0; index < barrier_count; index++) {
         auto barrier = barriers[index];  // barrier is a copy
@@ -2586,14 +2649,15 @@ void SyncValidator::ApplyBufferBarriers(AccessContext *context, VkPipelineStageF
         const ResourceAccessRange range = MakeRange(barrier);
         const auto src_access_scope = AccessScope(src_stage_accesses, barrier.srcAccessMask);
         const auto dst_access_scope = AccessScope(dst_stage_accesses, barrier.dstAccessMask);
-        const ApplyMemoryAccessBarrierFunctor update_action(src_exec_scope, src_access_scope, dst_exec_scope, dst_access_scope);
-        context->UpdateMemoryAccess(*buffer, range, update_action);
+        const SyncBarrier sync_barrier(src_exec_scope, src_access_scope, dst_exec_scope, dst_access_scope);
+        const ApplyBarrierFunctor update_action(sync_barrier, false /* layout_transition */);
+        context->UpdateResourceAccess(*buffer, range, update_action);
     }
 }
 
 void SyncValidator::ApplyImageBarriers(AccessContext *context, VkPipelineStageFlags src_exec_scope,
-                                       SyncStageAccessFlags src_stage_accesses, VkPipelineStageFlags dst_exec_scope,
-                                       SyncStageAccessFlags dst_stage_accesses, uint32_t barrier_count,
+                                       const SyncStageAccessFlags& src_stage_accesses, VkPipelineStageFlags dst_exec_scope,
+                                       const SyncStageAccessFlags& dst_stage_accesses, uint32_t barrier_count,
                                        const VkImageMemoryBarrier *barriers, const ResourceUsageTag &tag) {
     for (uint32_t index = 0; index < barrier_count; index++) {
         const auto &barrier = barriers[index];
@@ -2603,8 +2667,9 @@ void SyncValidator::ApplyImageBarriers(AccessContext *context, VkPipelineStageFl
         bool layout_transition = barrier.oldLayout != barrier.newLayout;
         const auto src_access_scope = AccessScope(src_stage_accesses, barrier.srcAccessMask);
         const auto dst_access_scope = AccessScope(dst_stage_accesses, barrier.dstAccessMask);
-        context->ApplyImageBarrier(*image, src_exec_scope, src_access_scope, dst_exec_scope, dst_access_scope, subresource_range,
-                                   layout_transition, tag);
+        const SyncBarrier sync_barrier(src_exec_scope, src_access_scope, dst_exec_scope, dst_access_scope);
+        const ApplyBarrierFunctor barrier_action(sync_barrier, layout_transition);
+        context->UpdateResourceAccess(*image, subresource_range, barrier_action);
     }
 }
 
@@ -2933,14 +2998,20 @@ void SyncValidator::PreCallRecordCmdPipelineBarrier(VkCommandBuffer commandBuffe
     auto dst_stage_accesses = AccessScopeByStage(dst_stage_mask);
     const auto src_exec_scope = WithEarlierPipelineStages(src_stage_mask);
     const auto dst_exec_scope = WithLaterPipelineStages(dst_stage_mask);
+
+    // These two apply barriers one at a time as the are restricted to the resource ranges specified per each barrier,
+    // but do not update the dependency chain information (but set the "pending" state) // s.t. the order independence
+    // of the barriers is maintained.
     ApplyBufferBarriers(access_context, src_exec_scope, src_stage_accesses, dst_exec_scope, dst_stage_accesses,
                         bufferMemoryBarrierCount, pBufferMemoryBarriers);
     ApplyImageBarriers(access_context, src_exec_scope, src_stage_accesses, dst_exec_scope, dst_stage_accesses,
                        imageMemoryBarrierCount, pImageMemoryBarriers, tag);
 
-    // Apply these last in-case there operation is a superset of the other two and would clean them up...
+    // Apply the global barriers last as is it walks all memory, it can also clean up the "pending" state without requiring an
+    // additional pass, updating the dependency chains *last* as it goes along.
+    // This is needed to guarantee order independence of the three lists.
     ApplyGlobalBarriers(access_context, src_exec_scope, dst_exec_scope, src_stage_accesses, dst_stage_accesses, memoryBarrierCount,
-                        pMemoryBarriers);
+                        pMemoryBarriers, tag);
 }
 
 void SyncValidator::PostCallRecordCreateDevice(VkPhysicalDevice gpu, const VkDeviceCreateInfo *pCreateInfo,

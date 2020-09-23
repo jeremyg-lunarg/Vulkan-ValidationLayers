@@ -43,18 +43,24 @@ enum SyncHazard {
 
 // Useful Utilites for manipulating StageAccess parameters, suitable as base class to save typing
 struct SyncStageAccess {
-    static inline SyncStageAccessFlagBits FlagBit(SyncStageAccessIndex stage_access) {
+    static inline SyncStageAccessFlags FlagBit(SyncStageAccessIndex stage_access) {
         return syncStageAccessInfoByStageAccessIndex[stage_access].stage_access_bit;
     }
     static inline SyncStageAccessFlags Flags(SyncStageAccessIndex stage_access) {
         return static_cast<SyncStageAccessFlags>(FlagBit(stage_access));
     }
 
-    static bool IsRead(SyncStageAccessFlagBits stage_access_bit) { return 0 != (stage_access_bit & syncStageAccessReadMask); }
+    static bool IsRead(const SyncStageAccessFlags& stage_access_bit) {
+        return (stage_access_bit & syncStageAccessReadMask).any();
+    }
     static bool IsRead(SyncStageAccessIndex stage_access_index) { return IsRead(FlagBit(stage_access_index)); }
 
-    static bool IsWrite(SyncStageAccessFlagBits stage_access_bit) { return 0 != (stage_access_bit & syncStageAccessWriteMask); }
-    static bool HasWrite(SyncStageAccessFlags stage_access_mask) { return 0 != (stage_access_mask & syncStageAccessWriteMask); }
+    static bool IsWrite(const SyncStageAccessFlags& stage_access_bit) {
+        return (stage_access_bit & syncStageAccessWriteMask).any();
+    }
+    static bool HasWrite(const SyncStageAccessFlags& stage_access_mask) {
+        return (stage_access_mask & syncStageAccessWriteMask).any();
+    }
     static bool IsWrite(SyncStageAccessIndex stage_access_index) { return IsWrite(FlagBit(stage_access_index)); }
     static VkPipelineStageFlagBits PipelineStageBit(SyncStageAccessIndex stage_access_index) {
         return syncStageAccessInfoByStageAccessIndex[stage_access_index].stage_mask;
@@ -62,7 +68,7 @@ struct SyncStageAccess {
     static SyncStageAccessFlags AccessScopeByStage(VkPipelineStageFlags stages);
     static SyncStageAccessFlags AccessScopeByAccess(VkAccessFlags access);
     static SyncStageAccessFlags AccessScope(VkPipelineStageFlags stages, VkAccessFlags access);
-    static SyncStageAccessFlags AccessScope(SyncStageAccessFlags stage_scope, VkAccessFlags accesses) {
+    static SyncStageAccessFlags AccessScope(const SyncStageAccessFlags& stage_scope, VkAccessFlags accesses) {
         return stage_scope & AccessScopeByAccess(accesses);
     }
 };
@@ -89,7 +95,7 @@ struct HazardResult {
     SyncStageAccessFlags prior_access = 0U;  // TODO -- change to a NONE enum in ...Bits
     ResourceUsageTag tag = ResourceUsageTag();
     void Set(const ResourceAccessState *access_state_, SyncStageAccessIndex usage_index_, SyncHazard hazard_,
-             SyncStageAccessFlags prior_, const ResourceUsageTag &tag_);
+             const SyncStageAccessFlags& prior_, const ResourceUsageTag &tag_);
 };
 
 struct SyncBarrier {
@@ -106,12 +112,13 @@ struct SyncBarrier {
         dst_exec_scope |= other.dst_exec_scope;
         dst_access_scope |= other.dst_access_scope;
     }
-    SyncBarrier(VkPipelineStageFlags src_exec_scope_, SyncStageAccessFlags src_access_scope_, VkPipelineStageFlags dst_exec_scope_,
-                SyncStageAccessFlags dst_access_scope_)
+    SyncBarrier(VkPipelineStageFlags src_exec_scope_, const SyncStageAccessFlags& src_access_scope_, VkPipelineStageFlags dst_exec_scope_,
+                const SyncStageAccessFlags& dst_access_scope_)
         : src_exec_scope(src_exec_scope_),
           src_access_scope(src_access_scope_),
           dst_exec_scope(dst_exec_scope_),
           dst_access_scope(dst_access_scope_) {}
+    SyncBarrier(const SyncBarrier &other) = default;
 };
 
 // To represent ordering guarantees such as rasterization and store
@@ -131,13 +138,25 @@ class ResourceAccessState : public SyncStageAccess {
     struct ReadState {
         VkPipelineStageFlagBits stage;  // The stage of this read
         SyncStageAccessFlags access;    // TODO: Change to FlagBits when we have a None bit enum
+                                        // TODO: Revisit whether this needs to support multiple reads per stage
         VkPipelineStageFlags barriers;  // all applicable barriered stages
         ResourceUsageTag tag;
+        VkPipelineStageFlags pending_dep_chain;  // Should be zero except during barrier application
+                                                 // Excluded from comparison
+        ReadState() = default;
         bool operator==(const ReadState &rhs) const {
             bool same = (stage == rhs.stage) && (access == rhs.access) && (barriers == rhs.barriers) && (tag == rhs.tag);
             return same;
         }
         bool operator!=(const ReadState &rhs) const { return !(*this == rhs); }
+        inline void Set(VkPipelineStageFlagBits stage_, SyncStageAccessFlags access_, VkPipelineStageFlags barriers_,
+                        const ResourceUsageTag &tag_) {
+            stage = stage_;
+            access = access_;
+            barriers = barriers_;
+            tag = tag_;
+            pending_dep_chain = 0;  // If this is a new read, we aren't applying a barrier set.
+        }
     };
 
   public:
@@ -145,49 +164,54 @@ class ResourceAccessState : public SyncStageAccess {
     HazardResult DetectHazard(SyncStageAccessIndex usage_index, const SyncOrderingBarrier &ordering) const;
 
     HazardResult DetectBarrierHazard(SyncStageAccessIndex usage_index, VkPipelineStageFlags source_exec_scope,
-                                     SyncStageAccessFlags source_access_scope) const;
+                                     const SyncStageAccessFlags& source_access_scope) const;
     HazardResult DetectAsyncHazard(SyncStageAccessIndex usage_index) const;
 
     void Update(SyncStageAccessIndex usage_index, const ResourceUsageTag &tag);
+    void SetWrite(const SyncStageAccessFlags& usage_bit, const ResourceUsageTag &tag);
     void Resolve(const ResourceAccessState &other);
-    void ApplyBarriers(const std::vector<SyncBarrier> &barriers);
-    void ApplyExecutionBarrier(VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask);
-    void ApplyExecutionBarriers(const std::vector<SyncBarrier> &barriers);
-    void ApplyMemoryAccessBarrier(bool multi_dep, VkPipelineStageFlags src_stage_mask, SyncStageAccessFlags src_scope,
-                                  VkPipelineStageFlags dst_stage_mask, SyncStageAccessFlags dst_scope);
+    void ApplyBarriers(const std::vector<SyncBarrier> &barriers, bool layout_transition);
+    void ApplyBarriers(const std::vector<SyncBarrier> &barriers, const ResourceUsageTag &tag);
+    void ApplyBarrier(const SyncBarrier &barrier, bool layout_transition);
+    void ApplyPendingBarriers(const ResourceUsageTag &tag);
 
     ResourceAccessState()
         : write_barriers(~SyncStageAccessFlags(0)),
           write_dependency_chain(0),
           write_tag(),
           last_write(0),
-          input_attachment_barriers(kNoAttachmentRead),
-          input_attachment_tag(),
+          input_attachment_read(false),
           last_read_count(0),
           last_read_stages(0),
-          read_execution_barriers(0) {}
+          read_execution_barriers(0),
+          pending_write_dep_chain(0),
+          pending_layout_transition(false),
+          pending_write_barriers(0) {}
 
+    bool HasPendingState() const {
+        return (0 != pending_layout_transition) || pending_write_barriers.any() || (0 != pending_write_dep_chain);
+    }
     bool HasWriteOp() const { return last_write != 0; }
     bool operator==(const ResourceAccessState &rhs) const {
         bool same = (write_barriers == rhs.write_barriers) && (write_dependency_chain == rhs.write_dependency_chain) &&
                     (last_read_count == rhs.last_read_count) && (last_read_stages == rhs.last_read_stages) &&
-                    (write_tag == rhs.write_tag) && (input_attachment_barriers == rhs.input_attachment_barriers) &&
-                    ((input_attachment_barriers == kNoAttachmentRead) || input_attachment_tag == rhs.input_attachment_tag) &&
+                    (write_tag == rhs.write_tag) && (input_attachment_read == rhs.input_attachment_read) &&
                     (read_execution_barriers == rhs.read_execution_barriers);
         for (uint32_t i = 0; same && i < last_read_count; i++) {
-            same |= last_reads[i] == rhs.last_reads[i];
+            same &= last_reads[i] == rhs.last_reads[i];
         }
         return same;
     }
     bool operator!=(const ResourceAccessState &rhs) const { return !(*this == rhs); }
-    VkPipelineStageFlags GetReadBarriers(SyncStageAccessFlags usage) const;
+    VkPipelineStageFlags GetReadBarriers(const SyncStageAccessFlags& usage) const;
     SyncStageAccessFlags GetWriteBarriers() const { return write_barriers; }
 
   private:
-    static constexpr VkPipelineStageFlags kNoAttachmentRead = ~VkPipelineStageFlags(0);
-    bool IsWriteHazard(SyncStageAccessFlagBits usage) const { return 0 != (usage & ~write_barriers); }
+    static constexpr VkPipelineStageFlags kInvalidAttachmentStage = ~VkPipelineStageFlags(0);
+    bool IsWriteHazard(SyncStageAccessFlags usage) const { return (usage & ~write_barriers).any(); }
+    bool IsRAWHazard(VkPipelineStageFlagBits usage_stage, const SyncStageAccessFlags& usage) const;
     bool InSourceScopeOrChain(VkPipelineStageFlags src_exec_scope, SyncStageAccessFlags src_access_scope) const {
-        return (src_access_scope & last_write) || (write_dependency_chain & src_exec_scope);
+        return (src_access_scope & last_write).any() || (write_dependency_chain & src_exec_scope);
     }
 
     static bool IsReadHazard(VkPipelineStageFlagBits stage, const VkPipelineStageFlags barriers) {
@@ -203,8 +227,10 @@ class ResourceAccessState : public SyncStageAccess {
     bool IsReadHazard(VkPipelineStageFlags stage_mask, const ReadState &read_access) const {
         return IsReadHazard(stage_mask, read_access.barriers);
     }
+    VkPipelineStageFlags GetOrderedStages(const SyncOrderingBarrier &ordering) const;
+    ReadState *GetReadStateForStage(VkPipelineStageFlagBits stage, uint32_t search_limit = kStageCount);
 
-    // TODO: Add a NONE (zero) enum to SyncStageAccessFlagBits for input_attachment_read and last_write
+    // TODO: Add a NONE (zero) enum to SyncStageAccessFlags for input_attachment_read and last_write
 
     // With reads, each must be "safe" relative to it's prior write, so we need only
     // save the most recent write operation (as anything *transitively* unsafe would arleady
@@ -214,18 +240,20 @@ class ResourceAccessState : public SyncStageAccess {
     ResourceUsageTag write_tag;
     SyncStageAccessFlags last_write;  // only the most recent write
 
-    // This is special as it's a framebuffer-local read from a framebuffer-global pipeline stage
-    // As the only possible state for the input attachment stage/access is SYNC_FRAGMENT_SHADER_INPUT_ATTACHMENT_READ_BIT,
-    // encode the presence with the barriers mask, ~0 denotes no pending input attachment. Zero -- is the no-barrier state,
-    // otherwise reflects the barrier/dependency chain information.
-    VkPipelineStageFlags input_attachment_barriers;
-    ResourceUsageTag input_attachment_tag;
+    // TODO Input Attachment cleanup for multiple reads in a given stage
+    // Tracks whether the fragment shader read is input attachment read
+    bool input_attachment_read;
 
     uint32_t last_read_count;
     VkPipelineStageFlags last_read_stages;
     VkPipelineStageFlags read_execution_barriers;
     static constexpr size_t kStageCount = 32;  // TODO: The manual count was 28 real stages. Add stage count to codegen
     std::array<ReadState, kStageCount> last_reads;
+
+    // Pending execution state to support independent parallel barriers
+    VkPipelineStageFlags pending_write_dep_chain;
+    bool pending_layout_transition;
+    SyncStageAccessFlags pending_write_barriers;
 };
 
 using ResourceAccessRangeMap = sparse_container::range_map<VkDeviceSize, ResourceAccessState>;
@@ -240,6 +268,9 @@ class AccessContext {
         kDetectAsync = 1U << 1,
         kDetectAll = (kDetectPrevious | kDetectAsync)
     };
+    constexpr static int kAddressTypeCount = AddressType::kMaxAddressType + 1;
+    static const std::array<AddressType, kAddressTypeCount> kAddressTypes;
+    using MapArray = std::array<ResourceAccessRangeMap, kAddressTypeCount>;
 
     // WIP TODO WIP Multi-dep -- change track back to support barrier vector, not just last.
     struct TrackBack {
@@ -275,11 +306,15 @@ class AccessContext {
     HazardResult DetectHazard(const IMAGE_VIEW_STATE *view, SyncStageAccessIndex current_usage, const SyncOrderingBarrier &ordering,
                               const VkOffset3D &offset, const VkExtent3D &extent, VkImageAspectFlags aspect_mask = 0U) const;
     HazardResult DetectImageBarrierHazard(const IMAGE_STATE &image, VkPipelineStageFlags src_exec_scope,
-                                          SyncStageAccessFlags src_access_scope, const VkImageSubresourceRange &subresource_range,
-                                          DetectOptions options) const;
+                                          const SyncStageAccessFlags& src_access_scope,
+                                          const VkImageSubresourceRange &subresource_range, DetectOptions options) const;
     HazardResult DetectImageBarrierHazard(const IMAGE_STATE &image, VkPipelineStageFlags src_exec_scope,
-                                          SyncStageAccessFlags src_stage_accesses, const VkImageMemoryBarrier &barrier) const;
+                                          const SyncStageAccessFlags& src_stage_accesses,
+                                          const VkImageMemoryBarrier &barrier) const;
     HazardResult DetectSubpassTransitionHazard(const TrackBack &track_back, const IMAGE_VIEW_STATE *attach_view) const;
+
+    void RecordLayoutTransitions(const RENDER_PASS_STATE &rp_state, uint32_t subpass,
+                                 const std::vector<const IMAGE_VIEW_STATE *> &attachment_views, const ResourceUsageTag &tag);
 
     const TrackBack &GetDstExternalTrackBack() const { return dst_external_; }
     void Reset() {
@@ -292,16 +327,22 @@ class AccessContext {
             map.clear();
         }
     }
+
+    // Follow the context previous to access the access state, supporting "lazy" import into the context. Not intended for
+    // subpass layout transition, as the pending state handling is more complex
     // TODO: See if returning the lower_bound would be useful from a performance POV -- look at the lower_bound overhead
     // Would need to add a "hint" overload to parallel_iterator::invalidate_[AB] call, if so.
     void ResolvePreviousAccess(AddressType type, const ResourceAccessRange &range, ResourceAccessRangeMap *descent_map,
                                const ResourceAccessState *infill_state) const;
-    void ResolvePreviousAccess(const IMAGE_STATE &image_state, const VkImageSubresourceRange &subresource_range,
-                               AddressType address_type, ResourceAccessRangeMap *descent_map,
-                               const ResourceAccessState *infill_state) const;
-    void ResolveAccessRange(AddressType type, const ResourceAccessRange &range, const std::vector<SyncBarrier> &barriers,
+    template <typename BarrierAction>
+    void ResolveAccessRange(const IMAGE_STATE &image_state, const VkImageSubresourceRange &subresource_range,
+                            BarrierAction &barrier_action, AddressType address_type, ResourceAccessRangeMap *descent_map,
+                            const ResourceAccessState *infill_state) const;
+    template <typename BarrierAction>
+    void ResolveAccessRange(AddressType type, const ResourceAccessRange &range, BarrierAction &barrier_action,
                             ResourceAccessRangeMap *resolve_map, const ResourceAccessState *infill_state,
                             bool recur_to_infill = true) const;
+
     void UpdateAccessState(const BUFFER_STATE &buffer, SyncStageAccessIndex current_usage, const ResourceAccessRange &range,
                            const ResourceUsageTag &tag);
     void UpdateAccessState(const IMAGE_STATE &image, SyncStageAccessIndex current_usage,
@@ -321,26 +362,15 @@ class AccessContext {
 
     void ResolveChildContexts(const std::vector<AccessContext> &contexts);
 
-    void ApplyImageBarrier(const IMAGE_STATE &image, VkPipelineStageFlags src_exec_scope, SyncStageAccessFlags src_access_scope,
-                           VkPipelineStageFlags dst_exec_scope, SyncStageAccessFlags dst_accesse_scope,
-                           const VkImageSubresourceRange &subresource_range);
-
-    void ApplyImageBarrier(const IMAGE_STATE &image, VkPipelineStageFlags src_exec_scope, SyncStageAccessFlags src_access_scope,
-                           VkPipelineStageFlags dst_exec_scope, SyncStageAccessFlags dst_access_scope,
-                           const VkImageSubresourceRange &subresource_range, bool layout_transition, const ResourceUsageTag &tag);
-    void ApplyImageBarrier(const IMAGE_STATE &image, const SyncBarrier &barrier, const VkImageSubresourceRange &subresource_range,
-                           bool layout_transition, const ResourceUsageTag &tag);
-
     template <typename Action>
-    void UpdateMemoryAccess(const BUFFER_STATE &buffer, const ResourceAccessRange &range, const Action action);
+    void UpdateResourceAccess(const BUFFER_STATE &buffer, const ResourceAccessRange &range, const Action action);
     template <typename Action>
-    void UpdateMemoryAccess(const IMAGE_STATE &image, const VkImageSubresourceRange &subresource_range, const Action action);
+    void UpdateResourceAccess(const IMAGE_STATE &image, const VkImageSubresourceRange &subresource_range, const Action action);
 
     template <typename Action>
     void ApplyGlobalBarriers(const Action &barrier_action);
 
     static AddressType ImageAddressType(const IMAGE_STATE &image);
-    static VkDeviceSize ResourceBaseAddress(const BINDABLE &bindable);
 
     AccessContext(uint32_t subpass, VkQueueFlags queue_flags, const std::vector<SubpassDependencyGraphNode> &dependencies,
                   const std::vector<AccessContext> &contexts, const AccessContext *external_context);
@@ -384,7 +414,7 @@ class AccessContext {
   private:
     HazardResult DetectHazard(AddressType type, SyncStageAccessIndex usage_index, const ResourceAccessRange &range) const;
     HazardResult DetectBarrierHazard(AddressType type, SyncStageAccessIndex current_usage, VkPipelineStageFlags src_exec_scope,
-                                     SyncStageAccessFlags src_access_scope, const ResourceAccessRange &range,
+                                     const SyncStageAccessFlags& src_access_scope, const ResourceAccessRange &range,
                                      DetectOptions options) const;
 
     template <typename Detector>
@@ -396,9 +426,8 @@ class AccessContext {
     HazardResult DetectPreviousHazard(AddressType type, const Detector &detector, const ResourceAccessRange &range) const;
     void UpdateAccessState(AddressType type, SyncStageAccessIndex current_usage, const ResourceAccessRange &range,
                            const ResourceUsageTag &tag);
-    constexpr static int kAddressTypeCount = AddressType::kMaxAddressType + 1;
-    static const std::array<AddressType, kAddressTypeCount> kAddressTypes;
-    std::array<ResourceAccessRangeMap, kAddressTypeCount> access_state_maps_;
+
+    MapArray access_state_maps_;
     std::vector<TrackBack> prev_;
     std::vector<TrackBack *> prev_by_subpass_;
     std::vector<AccessContext *> async_;
@@ -546,12 +575,12 @@ class SyncValidator : public ValidationStateTracker, public SyncStageAccess {
 
     void ApplyGlobalBarriers(AccessContext *context, VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask,
                              SyncStageAccessFlags src_stage_scope, SyncStageAccessFlags dst_stage_scope,
-                             uint32_t memoryBarrierCount, const VkMemoryBarrier *pMemoryBarriers);
-    void ApplyBufferBarriers(AccessContext *context, VkPipelineStageFlags src_stage_mask, SyncStageAccessFlags src_stage_scope,
-                             VkPipelineStageFlags dst_stage_mask, SyncStageAccessFlags dst_stage_scope, uint32_t barrier_count,
+                             uint32_t memoryBarrierCount, const VkMemoryBarrier *pMemoryBarriers, const ResourceUsageTag &tag);
+    void ApplyBufferBarriers(AccessContext *context, VkPipelineStageFlags src_stage_mask, const SyncStageAccessFlags& src_stage_scope,
+                             VkPipelineStageFlags dst_stage_mask, const SyncStageAccessFlags& dst_stage_scope, uint32_t barrier_count,
                              const VkBufferMemoryBarrier *barriers);
-    void ApplyImageBarriers(AccessContext *context, VkPipelineStageFlags src_stage_mask, SyncStageAccessFlags src_stage_scope,
-                            VkPipelineStageFlags dst_stage_mask, SyncStageAccessFlags dst_stage_scope, uint32_t barrier_count,
+    void ApplyImageBarriers(AccessContext *context, VkPipelineStageFlags src_stage_mask, const SyncStageAccessFlags& src_stage_scope,
+                            VkPipelineStageFlags dst_stage_mask, const SyncStageAccessFlags& dst_stage_scope, uint32_t barrier_count,
                             const VkImageMemoryBarrier *barriers, const ResourceUsageTag &tag);
 
     void ResetCommandBufferCallback(VkCommandBuffer command_buffer);
@@ -566,87 +595,87 @@ class SyncValidator : public ValidationStateTracker, public SyncStageAccess {
     bool SupressedBoundDescriptorWAW(const HazardResult &hazard) const;
 
     void PostCallRecordCreateDevice(VkPhysicalDevice gpu, const VkDeviceCreateInfo *pCreateInfo,
-                                    const VkAllocationCallbacks *pAllocator, VkDevice *pDevice, VkResult result);
+                                    const VkAllocationCallbacks *pAllocator, VkDevice *pDevice, VkResult result) override;
 
     bool ValidateBeginRenderPass(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo *pRenderPassBegin,
                                  const VkSubpassBeginInfoKHR *pSubpassBeginInfo, const char *func_name) const;
 
     bool PreCallValidateCmdBeginRenderPass(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo *pRenderPassBegin,
-                                           VkSubpassContents contents) const;
+                                           VkSubpassContents contents) const override;
 
     bool PreCallValidateCmdBeginRenderPass2KHR(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo *pRenderPassBegin,
-                                               const VkSubpassBeginInfoKHR *pSubpassBeginInfo) const;
+                                               const VkSubpassBeginInfoKHR *pSubpassBeginInfo) const override;
 
     bool PreCallValidateCmdBeginRenderPass2(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo *pRenderPassBegin,
-                                            const VkSubpassBeginInfoKHR *pSubpassBeginInfo) const;
+                                            const VkSubpassBeginInfoKHR *pSubpassBeginInfo) const override;
 
     bool PreCallValidateCmdCopyBuffer(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkBuffer dstBuffer, uint32_t regionCount,
-                                      const VkBufferCopy *pRegions) const;
+                                      const VkBufferCopy *pRegions) const override;
 
     void PreCallRecordCmdCopyBuffer(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkBuffer dstBuffer, uint32_t regionCount,
-                                    const VkBufferCopy *pRegions);
+                                    const VkBufferCopy *pRegions) override;
 
-    bool PreCallValidateCmdCopyBuffer2KHR(VkCommandBuffer commandBuffer, const VkCopyBufferInfo2KHR *pCopyBufferInfos) const;
+    bool PreCallValidateCmdCopyBuffer2KHR(VkCommandBuffer commandBuffer, const VkCopyBufferInfo2KHR *pCopyBufferInfos) const override;
 
-    void PreCallRecordCmdCopyBuffer2KHR(VkCommandBuffer commandBuffer, const VkCopyBufferInfo2KHR *pCopyBufferInfos);
+    void PreCallRecordCmdCopyBuffer2KHR(VkCommandBuffer commandBuffer, const VkCopyBufferInfo2KHR *pCopyBufferInfos) override;
 
     bool PreCallValidateCmdCopyImage(VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout,
                                      VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount,
-                                     const VkImageCopy *pRegions) const;
+                                     const VkImageCopy *pRegions) const override;
 
     void PreCallRecordCmdCopyImage(VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkImage dstImage,
-                                   VkImageLayout dstImageLayout, uint32_t regionCount, const VkImageCopy *pRegions);
+                                   VkImageLayout dstImageLayout, uint32_t regionCount, const VkImageCopy *pRegions) override;
 
-    bool PreCallValidateCmdCopyImage2KHR(VkCommandBuffer commandBuffer, const VkCopyImageInfo2KHR *pCopyImageInfo) const;
+    bool PreCallValidateCmdCopyImage2KHR(VkCommandBuffer commandBuffer, const VkCopyImageInfo2KHR *pCopyImageInfo) const override;
 
-    void PreCallRecordCmdCopyImage2KHR(VkCommandBuffer commandBuffer, const VkCopyImageInfo2KHR *pCopyImageInfo);
+    void PreCallRecordCmdCopyImage2KHR(VkCommandBuffer commandBuffer, const VkCopyImageInfo2KHR *pCopyImageInfo) override;
 
     bool PreCallValidateCmdPipelineBarrier(VkCommandBuffer commandBuffer, VkPipelineStageFlags srcStageMask,
                                            VkPipelineStageFlags dstStageMask, VkDependencyFlags dependencyFlags,
                                            uint32_t memoryBarrierCount, const VkMemoryBarrier *pMemoryBarriers,
                                            uint32_t bufferMemoryBarrierCount, const VkBufferMemoryBarrier *pBufferMemoryBarriers,
                                            uint32_t imageMemoryBarrierCount,
-                                           const VkImageMemoryBarrier *pImageMemoryBarriers) const;
+                                           const VkImageMemoryBarrier *pImageMemoryBarriers) const override;
 
     void PreCallRecordCmdPipelineBarrier(VkCommandBuffer commandBuffer, VkPipelineStageFlags srcStageMask,
                                          VkPipelineStageFlags dstStageMask, VkDependencyFlags dependencyFlags,
                                          uint32_t memoryBarrierCount, const VkMemoryBarrier *pMemoryBarriers,
                                          uint32_t bufferMemoryBarrierCount, const VkBufferMemoryBarrier *pBufferMemoryBarriers,
-                                         uint32_t imageMemoryBarrierCount, const VkImageMemoryBarrier *pImageMemoryBarriers);
+                                         uint32_t imageMemoryBarrierCount, const VkImageMemoryBarrier *pImageMemoryBarriers) override;
 
     void PostCallRecordBeginCommandBuffer(VkCommandBuffer commandBuffer, const VkCommandBufferBeginInfo *pBeginInfo,
-                                          VkResult result);
+                                          VkResult result) override;
 
     void PostCallRecordCmdBeginRenderPass(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo *pRenderPassBegin,
-                                          VkSubpassContents contents);
+                                          VkSubpassContents contents) override;
     void PostCallRecordCmdBeginRenderPass2(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo *pRenderPassBegin,
-                                           const VkSubpassBeginInfo *pSubpassBeginInfo);
+                                           const VkSubpassBeginInfo *pSubpassBeginInfo) override;
     void PostCallRecordCmdBeginRenderPass2KHR(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo *pRenderPassBegin,
-                                              const VkSubpassBeginInfo *pSubpassBeginInfo);
+                                              const VkSubpassBeginInfo *pSubpassBeginInfo) override;
 
     bool ValidateCmdNextSubpass(VkCommandBuffer commandBuffer, const VkSubpassBeginInfoKHR *pSubpassBeginInfo,
                                 const VkSubpassEndInfoKHR *pSubpassEndInfo, const char *func_name) const;
-    bool PreCallValidateCmdNextSubpass(VkCommandBuffer commandBuffer, VkSubpassContents contents) const;
+    bool PreCallValidateCmdNextSubpass(VkCommandBuffer commandBuffer, VkSubpassContents contents) const override;
     bool PreCallValidateCmdNextSubpass2(VkCommandBuffer commandBuffer, const VkSubpassBeginInfoKHR *pSubpassBeginInfo,
-                                        const VkSubpassEndInfoKHR *pSubpassEndInfo) const;
+                                        const VkSubpassEndInfoKHR *pSubpassEndInfo) const override;
     bool PreCallValidateCmdNextSubpass2KHR(VkCommandBuffer commandBuffer, const VkSubpassBeginInfoKHR *pSubpassBeginInfo,
-                                           const VkSubpassEndInfoKHR *pSubpassEndInfo) const;
+                                           const VkSubpassEndInfoKHR *pSubpassEndInfo) const override;
 
-    void PostCallRecordCmdNextSubpass(VkCommandBuffer commandBuffer, VkSubpassContents contents);
+    void PostCallRecordCmdNextSubpass(VkCommandBuffer commandBuffer, VkSubpassContents contents) override;
     void PostCallRecordCmdNextSubpass2(VkCommandBuffer commandBuffer, const VkSubpassBeginInfo *pSubpassBeginInfo,
-                                       const VkSubpassEndInfo *pSubpassEndInfo);
+                                       const VkSubpassEndInfo *pSubpassEndInfo) override;
     void PostCallRecordCmdNextSubpass2KHR(VkCommandBuffer commandBuffer, const VkSubpassBeginInfo *pSubpassBeginInfo,
-                                          const VkSubpassEndInfo *pSubpassEndInfo);
+                                          const VkSubpassEndInfo *pSubpassEndInfo) override;
 
     bool ValidateCmdEndRenderPass(VkCommandBuffer commandBuffer, const VkSubpassEndInfoKHR *pSubpassEndInfo,
                                   const char *func_name) const;
-    bool PreCallValidateCmdEndRenderPass(VkCommandBuffer commandBuffer) const;
-    bool PreCallValidateCmdEndRenderPass2KHR(VkCommandBuffer commandBuffer, const VkSubpassEndInfoKHR *pSubpassEndInfo) const;
-    bool PreCallValidateCmdEndRenderPass2(VkCommandBuffer commandBuffer, const VkSubpassEndInfoKHR *pSubpassEndInfo) const;
+    bool PreCallValidateCmdEndRenderPass(VkCommandBuffer commandBuffer) const override;
+    bool PreCallValidateCmdEndRenderPass2KHR(VkCommandBuffer commandBuffer, const VkSubpassEndInfoKHR *pSubpassEndInfo) const override;
+    bool PreCallValidateCmdEndRenderPass2(VkCommandBuffer commandBuffer, const VkSubpassEndInfoKHR *pSubpassEndInfo) const override;
 
-    void PostCallRecordCmdEndRenderPass(VkCommandBuffer commandBuffer);
-    void PostCallRecordCmdEndRenderPass2(VkCommandBuffer commandBuffer, const VkSubpassEndInfo *pSubpassEndInfo);
-    void PostCallRecordCmdEndRenderPass2KHR(VkCommandBuffer commandBuffer, const VkSubpassEndInfo *pSubpassEndInfo);
+    void PostCallRecordCmdEndRenderPass(VkCommandBuffer commandBuffer) override;
+    void PostCallRecordCmdEndRenderPass2(VkCommandBuffer commandBuffer, const VkSubpassEndInfo *pSubpassEndInfo) override;
+    void PostCallRecordCmdEndRenderPass2KHR(VkCommandBuffer commandBuffer, const VkSubpassEndInfo *pSubpassEndInfo) override;
 
     template <typename BufferImageCopyRegionType>
     bool ValidateCmdCopyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkImage dstImage,
@@ -654,36 +683,36 @@ class SyncValidator : public ValidationStateTracker, public SyncStageAccess {
                                       CopyCommandVersion version) const;
     bool PreCallValidateCmdCopyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkImage dstImage,
                                              VkImageLayout dstImageLayout, uint32_t regionCount,
-                                             const VkBufferImageCopy *pRegions) const;
+                                             const VkBufferImageCopy *pRegions) const override;
     bool PreCallValidateCmdCopyBufferToImage2KHR(VkCommandBuffer commandBuffer,
-                                                 const VkCopyBufferToImageInfo2KHR *pCopyBufferToImageInfo) const;
+                                                 const VkCopyBufferToImageInfo2KHR *pCopyBufferToImageInfo) const override;
 
     template <typename BufferImageCopyRegionType>
     void RecordCmdCopyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkImage dstImage,
                                     VkImageLayout dstImageLayout, uint32_t regionCount, const BufferImageCopyRegionType *pRegions,
                                     CopyCommandVersion version);
     void PreCallRecordCmdCopyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkImage dstImage,
-                                           VkImageLayout dstImageLayout, uint32_t regionCount, const VkBufferImageCopy *pRegions);
+                                           VkImageLayout dstImageLayout, uint32_t regionCount, const VkBufferImageCopy *pRegions) override;
     void PreCallRecordCmdCopyBufferToImage2KHR(VkCommandBuffer commandBuffer,
-                                               const VkCopyBufferToImageInfo2KHR *pCopyBufferToImageInfo);
+                                               const VkCopyBufferToImageInfo2KHR *pCopyBufferToImageInfo) override;
 
     template <typename BufferImageCopyRegionType>
     bool ValidateCmdCopyImageToBuffer(VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout,
                                       VkBuffer dstBuffer, uint32_t regionCount, const BufferImageCopyRegionType *pRegions,
                                       CopyCommandVersion version) const;
     bool PreCallValidateCmdCopyImageToBuffer(VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout,
-                                             VkBuffer dstBuffer, uint32_t regionCount, const VkBufferImageCopy *pRegions) const;
+                                             VkBuffer dstBuffer, uint32_t regionCount, const VkBufferImageCopy *pRegions) const override;
     bool PreCallValidateCmdCopyImageToBuffer2KHR(VkCommandBuffer commandBuffer,
-                                                 const VkCopyImageToBufferInfo2KHR *pCopyImageToBufferInfo) const;
+                                                 const VkCopyImageToBufferInfo2KHR *pCopyImageToBufferInfo) const override;
 
     template <typename BufferImageCopyRegionType>
     void RecordCmdCopyImageToBuffer(VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout,
                                     VkBuffer dstBuffer, uint32_t regionCount, const BufferImageCopyRegionType *pRegions,
                                     CopyCommandVersion version);
     void PreCallRecordCmdCopyImageToBuffer(VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout,
-                                           VkBuffer dstBuffer, uint32_t regionCount, const VkBufferImageCopy *pRegions);
+                                           VkBuffer dstBuffer, uint32_t regionCount, const VkBufferImageCopy *pRegions) override;
     void PreCallRecordCmdCopyImageToBuffer2KHR(VkCommandBuffer commandBuffer,
-                                               const VkCopyImageToBufferInfo2KHR *pCopyImageToBufferInfo);
+                                               const VkCopyImageToBufferInfo2KHR *pCopyImageToBufferInfo) override;
 
     template <typename RegionType>
     bool ValidateCmdBlitImage(VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkImage dstImage,
@@ -692,8 +721,8 @@ class SyncValidator : public ValidationStateTracker, public SyncStageAccess {
 
     bool PreCallValidateCmdBlitImage(VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout,
                                      VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount,
-                                     const VkImageBlit *pRegions, VkFilter filter) const;
-    bool PreCallValidateCmdBlitImage2KHR(VkCommandBuffer commandBuffer, const VkBlitImageInfo2KHR *pBlitImageInfo) const;
+                                     const VkImageBlit *pRegions, VkFilter filter) const override;
+    bool PreCallValidateCmdBlitImage2KHR(VkCommandBuffer commandBuffer, const VkBlitImageInfo2KHR *pBlitImageInfo) const override;
 
     template <typename RegionType>
     void RecordCmdBlitImage(VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkImage dstImage,
@@ -701,8 +730,8 @@ class SyncValidator : public ValidationStateTracker, public SyncStageAccess {
                             ResourceUsageTag tag);
     void PreCallRecordCmdBlitImage(VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkImage dstImage,
                                    VkImageLayout dstImageLayout, uint32_t regionCount, const VkImageBlit *pRegions,
-                                   VkFilter filter);
-    void PreCallRecordCmdBlitImage2KHR(VkCommandBuffer commandBuffer, const VkBlitImageInfo2KHR *pBlitImageInfo);
+                                   VkFilter filter) override;
+    void PreCallRecordCmdBlitImage2KHR(VkCommandBuffer commandBuffer, const VkBlitImageInfo2KHR *pBlitImageInfo) override;
 
     bool ValidateIndirectBuffer(const AccessContext &context, VkCommandBuffer commandBuffer, const VkDeviceSize struct_size,
                                 const VkBuffer buffer, const VkDeviceSize offset, const uint32_t drawCount, const uint32_t stride,
@@ -714,120 +743,120 @@ class SyncValidator : public ValidationStateTracker, public SyncStageAccess {
                              const char *function) const;
     void RecordCountBuffer(AccessContext &context, const ResourceUsageTag &tag, VkBuffer buffer, VkDeviceSize offset);
 
-    bool PreCallValidateCmdDispatch(VkCommandBuffer commandBuffer, uint32_t x, uint32_t y, uint32_t z) const;
-    void PreCallRecordCmdDispatch(VkCommandBuffer commandBuffer, uint32_t x, uint32_t y, uint32_t z);
+    bool PreCallValidateCmdDispatch(VkCommandBuffer commandBuffer, uint32_t x, uint32_t y, uint32_t z) const override;
+    void PreCallRecordCmdDispatch(VkCommandBuffer commandBuffer, uint32_t x, uint32_t y, uint32_t z) override;
 
-    bool PreCallValidateCmdDispatchIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset) const;
-    void PreCallRecordCmdDispatchIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset);
+    bool PreCallValidateCmdDispatchIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset) const override;
+    void PreCallRecordCmdDispatchIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset) override;
 
     bool PreCallValidateCmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex,
-                                uint32_t firstInstance) const;
+                                uint32_t firstInstance) const override;
     void PreCallRecordCmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex,
-                              uint32_t firstInstance);
+                              uint32_t firstInstance) override;
 
     bool PreCallValidateCmdDrawIndexed(VkCommandBuffer commandBuffer, uint32_t indexCount, uint32_t instanceCount,
                                        uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) const;
     void PreCallRecordCmdDrawIndexed(VkCommandBuffer commandBuffer, uint32_t indexCount, uint32_t instanceCount,
-                                     uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance);
+                                     uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) override;
 
     bool PreCallValidateCmdDrawIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount,
-                                        uint32_t stride) const;
+                                        uint32_t stride) const override;
     void PreCallRecordCmdDrawIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount,
-                                      uint32_t stride);
+                                      uint32_t stride) override;
 
     bool PreCallValidateCmdDrawIndexedIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset,
-                                               uint32_t drawCount, uint32_t stride) const;
+                                               uint32_t drawCount, uint32_t stride) const override;
     void PreCallRecordCmdDrawIndexedIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset,
-                                             uint32_t drawCount, uint32_t stride);
+                                             uint32_t drawCount, uint32_t stride) override;
 
     bool ValidateCmdDrawIndirectCount(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkBuffer countBuffer,
                                       VkDeviceSize countBufferOffset, uint32_t maxDrawCount, uint32_t stride,
                                       const char *function) const;
     bool PreCallValidateCmdDrawIndirectCount(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset,
                                              VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount,
-                                             uint32_t stride) const;
+                                             uint32_t stride) const override;
     void PreCallRecordCmdDrawIndirectCount(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset,
                                            VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount,
-                                           uint32_t stride);
+                                           uint32_t stride) override;
     bool PreCallValidateCmdDrawIndirectCountKHR(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset,
                                                 VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount,
-                                                uint32_t stride) const;
+                                                uint32_t stride) const override;
     void PreCallRecordCmdDrawIndirectCountKHR(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset,
                                               VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount,
-                                              uint32_t stride);
+                                              uint32_t stride) override;
     bool PreCallValidateCmdDrawIndirectCountAMD(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset,
                                                 VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount,
-                                                uint32_t stride) const;
+                                                uint32_t stride) const override;
     void PreCallRecordCmdDrawIndirectCountAMD(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset,
                                               VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount,
-                                              uint32_t stride);
+                                              uint32_t stride) override;
 
     bool ValidateCmdDrawIndexedIndirectCount(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset,
                                              VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount,
                                              uint32_t stride, const char *function) const;
     bool PreCallValidateCmdDrawIndexedIndirectCount(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset,
                                                     VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount,
-                                                    uint32_t stride) const;
+                                                    uint32_t stride) const override;
     void PreCallRecordCmdDrawIndexedIndirectCount(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset,
                                                   VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount,
-                                                  uint32_t stride);
+                                                  uint32_t stride) override;
     bool PreCallValidateCmdDrawIndexedIndirectCountKHR(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset,
                                                        VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount,
-                                                       uint32_t stride) const;
+                                                       uint32_t stride) const override;
     void PreCallRecordCmdDrawIndexedIndirectCountKHR(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset,
                                                      VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount,
-                                                     uint32_t stride);
+                                                     uint32_t stride) override;
     bool PreCallValidateCmdDrawIndexedIndirectCountAMD(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset,
                                                        VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount,
-                                                       uint32_t stride) const;
+                                                       uint32_t stride) const override;
     void PreCallRecordCmdDrawIndexedIndirectCountAMD(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset,
                                                      VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount,
-                                                     uint32_t stride);
+                                                     uint32_t stride) override;
 
     bool PreCallValidateCmdClearColorImage(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout imageLayout,
                                            const VkClearColorValue *pColor, uint32_t rangeCount,
-                                           const VkImageSubresourceRange *pRanges) const;
+                                           const VkImageSubresourceRange *pRanges) const override;
     void PreCallRecordCmdClearColorImage(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout imageLayout,
                                          const VkClearColorValue *pColor, uint32_t rangeCount,
-                                         const VkImageSubresourceRange *pRanges);
+                                         const VkImageSubresourceRange *pRanges) override;
 
     bool PreCallValidateCmdClearDepthStencilImage(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout imageLayout,
                                                   const VkClearDepthStencilValue *pDepthStencil, uint32_t rangeCount,
-                                                  const VkImageSubresourceRange *pRanges) const;
+                                                  const VkImageSubresourceRange *pRanges) const override;
     void PreCallRecordCmdClearDepthStencilImage(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout imageLayout,
                                                 const VkClearDepthStencilValue *pDepthStencil, uint32_t rangeCount,
-                                                const VkImageSubresourceRange *pRanges);
+                                                const VkImageSubresourceRange *pRanges) override;
 
     bool PreCallValidateCmdCopyQueryPoolResults(VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t firstQuery,
                                                 uint32_t queryCount, VkBuffer dstBuffer, VkDeviceSize dstOffset,
-                                                VkDeviceSize stride, VkQueryResultFlags flags) const;
+                                                VkDeviceSize stride, VkQueryResultFlags flags) const override;
     void PreCallRecordCmdCopyQueryPoolResults(VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t firstQuery,
                                               uint32_t queryCount, VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize stride,
-                                              VkQueryResultFlags flags);
+                                              VkQueryResultFlags flags) override;
 
     bool PreCallValidateCmdFillBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize size,
-                                      uint32_t data) const;
+                                      uint32_t data) const override;
     void PreCallRecordCmdFillBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize size,
-                                    uint32_t data);
+                                    uint32_t data) override;
 
     bool PreCallValidateCmdResolveImage(VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout,
                                         VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount,
-                                        const VkImageResolve *pRegions) const;
+                                        const VkImageResolve *pRegions) const override;
 
     void PreCallRecordCmdResolveImage(VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout,
                                       VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount,
-                                      const VkImageResolve *pRegions);
+                                      const VkImageResolve *pRegions) override;
 
-    bool PreCallValidateCmdResolveImage2KHR(VkCommandBuffer commandBuffer, const VkResolveImageInfo2KHR *pResolveImageInfo) const;
-    void PreCallRecordCmdResolveImage2KHR(VkCommandBuffer commandBuffer, const VkResolveImageInfo2KHR *pResolveImageInfo);
+    bool PreCallValidateCmdResolveImage2KHR(VkCommandBuffer commandBuffer, const VkResolveImageInfo2KHR *pResolveImageInfo) const override;
+    void PreCallRecordCmdResolveImage2KHR(VkCommandBuffer commandBuffer, const VkResolveImageInfo2KHR *pResolveImageInfo) override;
 
     bool PreCallValidateCmdUpdateBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDeviceSize dstOffset,
-                                        VkDeviceSize dataSize, const void *pData) const;
+                                        VkDeviceSize dataSize, const void *pData) const override;
     void PreCallRecordCmdUpdateBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDeviceSize dstOffset,
-                                      VkDeviceSize dataSize, const void *pData);
+                                      VkDeviceSize dataSize, const void *pData) override;
 
     bool PreCallValidateCmdWriteBufferMarkerAMD(VkCommandBuffer commandBuffer, VkPipelineStageFlagBits pipelineStage,
-                                                VkBuffer dstBuffer, VkDeviceSize dstOffset, uint32_t marker) const;
+                                                VkBuffer dstBuffer, VkDeviceSize dstOffset, uint32_t marker) const override;
     void PreCallRecordCmdWriteBufferMarkerAMD(VkCommandBuffer commandBuffer, VkPipelineStageFlagBits pipelineStage,
-                                              VkBuffer dstBuffer, VkDeviceSize dstOffset, uint32_t marker);
+                                              VkBuffer dstBuffer, VkDeviceSize dstOffset, uint32_t marker) override;
 };
