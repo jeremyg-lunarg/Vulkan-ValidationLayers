@@ -255,6 +255,7 @@ if(BUILD_LAYERS OR BUILD_TESTS)
     else()
         message(FATAL_ERROR "Cannot determine SPIRV-Tools target name")
     endif()
+    find_package(Boost 1.74 COMPONENTS log log_setup REQUIRED)
 endif()
 
 # VkLayer_utils library ----------------------------------------------------------------------------------------------------------

@@ -29,6 +29,7 @@
 #include "cast_utils.h"
 #include "layer_validation_tests.h"
 #include "core_validation_error_enums.h"
+#include <boost/log/trivial.hpp>
 
 class MessageIdFilter {
   public:
@@ -3599,17 +3600,24 @@ TEST_F(VkLayerTest, QueueForwardProgressFenceWait) {
     submit_info.pCommandBuffers = &cb1.handle();
     submit_info.signalSemaphoreCount = 1;
     submit_info.pSignalSemaphores = &semaphore;
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     vk::QueueSubmit(m_device->m_queue, 1, &submit_info, VK_NULL_HANDLE);
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
 
     m_commandBuffer->begin();
     m_commandBuffer->end();
     submit_info.pCommandBuffers = &m_commandBuffer->handle();
     m_errorMonitor->SetDesiredFailureMsg(kErrorBit, queue_forward_progress_message);
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     vk::QueueSubmit(m_device->m_queue, 1, &submit_info, VK_NULL_HANDLE);
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     m_errorMonitor->VerifyFound();
 
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     vk::DeviceWaitIdle(m_device->device());
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     vk::DestroySemaphore(m_device->device(), semaphore, nullptr);
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
 }
 
 #if GTEST_IS_THREADSAFE
@@ -3650,28 +3658,44 @@ TEST_F(VkLayerTest, ThreadCommandBufferCollision) {
 
     // First do some correct operations using multiple threads.
     // Add many entries to command buffer from another thread.
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     std::thread thread1(AddToCommandBuffer, &data);
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     // Make non-conflicting calls from this thread at the same time.
     for (int i = 0; i < 80000; i++) {
         uint32_t count;
         vk::EnumeratePhysicalDevices(instance(), &count, NULL);
     }
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     thread1.join();
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
 
     // Then do some incorrect operations using multiple threads.
     // Add many entries to command buffer from another thread.
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     std::thread thread2(AddToCommandBuffer, &data);
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     // Add many entries to command buffer from this thread at the same time.
     AddToCommandBuffer(&data);
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
 
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     thread2.join();
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     commandBuffer.end();
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
 
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     m_errorMonitor->SetBailout(NULL);
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
 
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     m_errorMonitor->VerifyFound();
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
 
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     vk::DestroyEvent(device(), event, NULL);
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
 }
 
 TEST_F(VkLayerTest, ThreadUpdateDescriptorCollision) {

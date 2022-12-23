@@ -133,6 +133,8 @@ target_link_libraries(vk_layer_validation_tests PRIVATE
     SPIRV-Headers::SPIRV-Headers
     GTest::gtest
     GTest::gtest_main
+    Boost::log
+    Boost::log_setup
 )
 
 if (NOT WIN32)

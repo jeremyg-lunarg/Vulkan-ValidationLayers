@@ -35,6 +35,7 @@
 #include <thread>
 
 #include "cast_utils.h"
+#include <boost/log/trivial.hpp>
 
 //
 // POSITIVE VALIDATION TESTS
@@ -731,26 +732,38 @@ TEST_F(VkPositiveLayerTest, CommandBufferSimultaneousUseSync) {
 
     // Submit CB once signaling s1, with fence so we can roll forward to its retirement.
     VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr, 0, nullptr, nullptr, 1, &m_commandBuffer->handle(), 1, &s1};
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     err = vk::QueueSubmit(m_device->m_queue, 1, &si, fence);
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     ASSERT_VK_SUCCESS(err);
 
     // Submit CB again, signaling s2.
     si.pSignalSemaphores = &s2;
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     err = vk::QueueSubmit(m_device->m_queue, 1, &si, VK_NULL_HANDLE);
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     ASSERT_VK_SUCCESS(err);
 
     // Wait for fence.
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     err = vk::WaitForFences(m_device->device(), 1, &fence, VK_TRUE, kWaitTimeout);
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     ASSERT_VK_SUCCESS(err);
 
     // CB is still in flight from second submission, but semaphore s1 is no
     // longer in flight. delete it.
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     vk::DestroySemaphore(m_device->device(), s1, nullptr);
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
 
     // Force device idle and clean up remaining objects
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     vk::DeviceWaitIdle(m_device->device());
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     vk::DestroySemaphore(m_device->device(), s2, nullptr);
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
     vk::DestroyFence(m_device->device(), fence, nullptr);
+    BOOST_LOG_TRIVIAL(info) << __func__ << ":" << __LINE__;
 }
 
 TEST_F(VkPositiveLayerTest, FramebufferBindingDestroyCommandPool) {

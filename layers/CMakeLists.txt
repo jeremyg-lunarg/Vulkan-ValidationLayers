@@ -267,6 +267,8 @@ target_link_libraries(VkLayer_khronos_validation PRIVATE
     ${SPIRV_TOOLS_TARGET}
     SPIRV-Tools-opt
     SPIRV-Headers::SPIRV-Headers
+    Boost::log
+    Boost::log_setup
 )
 
 # There are 2 primary deliverables for the validation layers.

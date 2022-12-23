@@ -27,6 +27,8 @@
 #include "queue_state.h"
 #include "cmd_buffer_state.h"
 #include "state_tracker.h"
+#include <iostream>
+#include <boost/log/trivial.hpp>
 
 using SemOp = SEMAPHORE_STATE::SemOp;
 
@@ -83,6 +85,7 @@ uint64_t QUEUE_STATE::Submit(CB_SUBMISSION &&submission) {
     submission.seq = ++seq_;
     submission.BeginUse();
     bool retire_early = false;
+    BOOST_LOG_TRIVIAL(info) << "Q::" << __func__ << std::hex << " q=" << Handle().handle << std::dec << " seq=" << seq_;
     for (auto &wait : submission.wait_semaphores) {
         wait.semaphore->EnqueueWait(this, submission.seq, wait.payload);
     }
@@ -111,6 +114,7 @@ std::shared_future<void> QUEUE_STATE::Wait(uint64_t until_seq) {
     if (until_seq == UINT64_MAX) {
         until_seq = seq_;
     }
+    BOOST_LOG_TRIVIAL(info) << "Q::" << __func__ << " queue=" << std::hex << Handle().handle << std::dec << " until=" << until_seq;
     if (submissions_.empty() || until_seq < submissions_.begin()->seq) {
         std::promise<void> already_done;
         auto result = already_done.get_future();
@@ -141,6 +145,7 @@ uint64_t QUEUE_STATE::Notify(uint64_t until_seq) {
     if (until_seq == UINT64_MAX) {
         until_seq = seq_;
     }
+    BOOST_LOG_TRIVIAL(info) << "Q::" << __func__ << std::hex << " q=" << Handle().handle << std::dec << " until_seq=" << until_seq;
     if (request_seq_ < until_seq) {
         request_seq_ = until_seq;
     }
@@ -176,12 +181,16 @@ CB_SUBMISSION *QUEUE_STATE::NextSubmission() {
         result = &submissions_.front();
         // NOTE: the submission must remain on the dequeue until we're done processing it so that
         // anyone waiting for it can find the correct waiter
+        BOOST_LOG_TRIVIAL(info) << "Q::" << __func__ << std::hex << " q=" << Handle().handle << std::dec << " seq=" << result->seq;
+    } else {
+        BOOST_LOG_TRIVIAL(info) << "Q::" << __func__ << " exit";
     }
     return result;
 }
 
 void QUEUE_STATE::ThreadFunc() {
     CB_SUBMISSION *submission = nullptr;
+    BOOST_LOG_TRIVIAL(info) << "Q::" << __func__ << " queue=" << std::hex << Handle().handle << std::dec;
 
     auto is_query_updated_after = [this](const QueryObject &query_object) {
         auto guard = this->Lock();
@@ -227,6 +236,8 @@ void QUEUE_STATE::ThreadFunc() {
         // wake up anyone waiting for this submission to be retired
         {
             auto guard = Lock();
+            BOOST_LOG_TRIVIAL(info) << "Q::" << __func__ << std::hex << " q=" << Handle().handle << std::dec
+                                    << " seq=" << submission->seq << " DONE";
             submission->completed.set_value();
             submissions_.pop_front();
         }
@@ -234,6 +245,7 @@ void QUEUE_STATE::ThreadFunc() {
 }
 
 bool FENCE_STATE::EnqueueSignal(QUEUE_STATE *queue_state, uint64_t next_seq) {
+    BOOST_LOG_TRIVIAL(info) << "F::" << __func__ << std::hex << " fence=" << Handle().handle << std::dec << " seq=" << next_seq;
     auto guard = WriteLock();
     if (scope_ != kSyncScopeInternal) {
         return true;
@@ -252,11 +264,13 @@ void FENCE_STATE::NotifyAndWait() {
         // Hold the lock only while updating members, but not
         // while waiting
         auto guard = WriteLock();
+        BOOST_LOG_TRIVIAL(info) << "F::" << __func__ << std::hex << " fence=" << Handle().handle << std::dec << " state=" << state_;
         if (state_ == FENCE_INFLIGHT) {
             if (queue_) {
                 queue_->Notify(seq_);
                 waiter = waiter_;
             } else {
+                BOOST_LOG_TRIVIAL(info) << "F::" << __func__ << std::hex << " fence=" << Handle().handle << std::dec << " retire";
                 state_ = FENCE_RETIRED;
                 completed_.set_value();
                 queue_ = nullptr;
@@ -277,6 +291,7 @@ void FENCE_STATE::NotifyAndWait() {
 void FENCE_STATE::Retire() {
     auto guard = WriteLock();
     if (state_ == FENCE_INFLIGHT) {
+        BOOST_LOG_TRIVIAL(info) << "F::" << __func__ << std::hex << " fence=" << Handle().handle << std::dec;
         state_ = FENCE_RETIRED;
         completed_.set_value();
         queue_ = nullptr;
@@ -285,6 +300,7 @@ void FENCE_STATE::Retire() {
 }
 
 void FENCE_STATE::Reset() {
+    BOOST_LOG_TRIVIAL(info) << "F::" << __func__ << std::hex << " fence=" << Handle().handle << std::dec;
     auto guard = WriteLock();
     queue_ = nullptr;
     seq_ = 0;
@@ -551,4 +567,8 @@ void SEMAPHORE_STATE::Export(VkExternalSemaphoreHandleTypeFlagBits handle_type) 
             EnqueueWait(last_op->queue, last_op->seq, last_op->payload);
         }
     }
+}
+void SEMAPHORE_STATE::Destroy() {
+    BOOST_LOG_TRIVIAL(info) << "S::" << __func__ << " sem=" << std::hex << Handle().handle << std::dec;
+    BASE_NODE::Destroy();
 }

@@ -198,6 +198,9 @@ class SEMAPHORE_STATE : public REFCOUNTED_NODE {
           dev_data_(dev) {
     }
 
+    ~SEMAPHORE_STATE() { Destroy(); }
+    void Destroy() override;
+
     VkSemaphore semaphore() const { return handle_.Cast<VkSemaphore>(); }
     SyncScope Scope() const {
         auto guard = ReadLock();
