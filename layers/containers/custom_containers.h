@@ -31,6 +31,7 @@
 #include <type_traits>
 #include <optional>
 #include <utility>
+#include <variant>
 
 #ifdef USE_ROBIN_HOOD_HASHING
 #include "robin_hood.h"
@@ -133,23 +134,24 @@ class small_vector {
     static const size_type kMaxCapacity = std::numeric_limits<size_type>::max();
     static_assert(N <= kMaxCapacity, "size must be less than size_type::max");
 
-    small_vector() : size_(0), capacity_(N), working_store_(GetSmallStore()) {}
+    small_vector() : size_(0), capacity_(N), data_() {}
 
-    small_vector(std::initializer_list<T> list) : size_(0), capacity_(N), working_store_(GetSmallStore()) { PushBackFrom(list); }
+    small_vector(std::initializer_list<T> list) : size_(0), capacity_(N) { PushBackFrom(list); }
 
-    small_vector(const small_vector &other) : size_(0), capacity_(N), working_store_(GetSmallStore()) { PushBackFrom(other); }
+    small_vector(const small_vector &other) : size_(0), capacity_(N) { PushBackFrom(other); }
 
-    small_vector(small_vector &&other) : size_(0), capacity_(N), working_store_(GetSmallStore()) {
-        if (other.large_store_) {
+    small_vector(small_vector &&other) : size_(0), capacity_(N) {
+        if (!other.IsSmall()) {
             MoveLargeStore(other);
         } else {
+            InitSmall();
             PushBackFrom(std::move(other));
         }
         // Per the spec, when constructing from other, other is guaranteed to be empty after the constructor runs
         other.clear();
     }
 
-    small_vector(size_type size, const value_type &value = value_type()) : size_(0), capacity_(N), working_store_(GetSmallStore()) {
+    small_vector(size_type size, const value_type &value = value_type()) : size_(0), capacity_(N) {
         reserve(size);
         auto dest = GetWorkingStore();
         for (size_type i = 0; i < size; i++) {
@@ -214,7 +216,7 @@ class small_vector {
             // Note: move assign doesn't require other to become empty (as does move construction)
             //       so we'll leave other alone except in the large store case, while moving the object
             //       *in* the vector from other
-            if (other.large_store_) {
+            if (!other.IsSmall()) {
                 // Moving the other large store intact is probably best, even if we have to destroy everything in this.
                 clear();
                 MoveLargeStore(other);
@@ -320,18 +322,17 @@ class small_vector {
     void reserve(size_type new_cap) {
         // Since this can't shrink, if we're growing we're newing
         if (new_cap > capacity_) {
+            assert(new_cap > kSmallCapacity);
             assert(capacity_ >= kSmallCapacity);
-            auto new_store = std::unique_ptr<BackingStore[]>(new BackingStore[new_cap]);
+            std::unique_ptr<BackingStore[]> new_store(new BackingStore[new_cap]);
             auto working_store = GetWorkingStore();
             for (size_type i = 0; i < size_; i++) {
                 new (new_store[i].data) value_type(std::move(working_store[i]));
                 working_store[i].~value_type();
             }
-            large_store_ = std::move(new_store);
-            assert(new_cap > kSmallCapacity);
+            data_.template emplace<BigStore>(std::move(new_store));
             capacity_ = new_cap;
         }
-        UpdateWorkingStore();
         // No shrink here.
     }
 
@@ -359,21 +360,17 @@ class small_vector {
     void shrink_to_fit() {
         if (size_ == 0) {
             // shrink resets to small when empty
+            InitSmall();
             capacity_ = kSmallCapacity;
-            large_store_.reset();
-            UpdateWorkingStore();
         } else if ((capacity_ > kSmallCapacity) && (capacity_ > size_)) {
             auto source = GetWorkingStore();
             // Keep the source from disappearing until the end of the function
-            auto old_store = std::unique_ptr<BackingStore[]>(std::move(large_store_));
-            assert(!large_store_);
+            auto old_store = std::move(std::get<BigStore>(data_));
             if (size_ < kSmallCapacity) {
-                capacity_ = kSmallCapacity;
+                InitSmall();
             } else {
-                large_store_ = std::unique_ptr<BackingStore[]>(new BackingStore[size_]);
-                capacity_ = size_;
+                InitBig(size_);
             }
-            UpdateWorkingStore();
             auto dest = GetWorkingStore();
             for (size_type i = 0; i < size_; i++) {
                 dest[i] = std::move(source[i]);
@@ -396,31 +393,33 @@ class small_vector {
     inline const_pointer data() const { return GetWorkingStore(); }
 
   protected:
-    inline const_pointer ComputeWorkingStore() const {
-        assert(large_store_ || (capacity_ == kSmallCapacity));
+    bool IsSmall() const { return std::holds_alternative<SmallStore>(data_); }
 
-        const BackingStore *store = large_store_ ? large_store_.get() : small_store_;
-        return &store->object;
-    }
-    inline pointer ComputeWorkingStore() {
-        assert(large_store_ || (capacity_ == kSmallCapacity));
-
-        BackingStore *store = large_store_ ? large_store_.get() : small_store_;
-        return &store->object;
+    void InitSmall() {
+        data_.template emplace<SmallStore>();
+        capacity_ = kSmallCapacity;
     }
 
-    void UpdateWorkingStore() { working_store_ = ComputeWorkingStore(); }
+    void InitBig(size_t n) {
+        data_.template emplace<BigStore>(new BackingStore[n]);
+        capacity_ = n;
+    }
 
     inline const_pointer GetWorkingStore() const {
-        DbgWorkingStoreCheck();
-        return working_store_;
-    }
-    inline pointer GetWorkingStore() {
-        DbgWorkingStoreCheck();
-        return working_store_;
+        if (IsSmall()) {
+            return &std::get<SmallStore>(data_)[0].object;
+        } else {
+            return &std::get<BigStore>(data_)[0].object;
+        }
     }
 
-    inline pointer GetSmallStore() { return &small_store_->object; }
+    inline pointer GetWorkingStore() {
+        if (IsSmall()) {
+            return &std::get<SmallStore>(data_)[0].object;
+        } else {
+            return &std::get<BigStore>(data_)[0].object;
+        }
+    }
 
     union BackingStore {
         BackingStore() {}
@@ -429,32 +428,23 @@ class small_vector {
         uint8_t data[sizeof(value_type)];
         value_type object;
     };
+    using SmallStore = std::array<BackingStore, N>;
+    using BigStore = std::unique_ptr<BackingStore[]>;
     size_type size_;
     size_type capacity_;
-    BackingStore small_store_[N];
-    std::unique_ptr<BackingStore[]> large_store_;
-    value_type *working_store_;
-
-#ifndef NDEBUG
-    void DbgWorkingStoreCheck() const { assert(ComputeWorkingStore() == working_store_); };
-#else
-    void DbgWorkingStoreCheck() const {};
-#endif
+    std::variant<SmallStore, BigStore> data_;
 
   private:
     void MoveLargeStore(small_vector &other) {
-        assert(other.large_store_);
         assert(other.capacity_ > kSmallCapacity);
         // In move operations, from a small vector with a large store, we can move from it
-        large_store_ = std::move(other.large_store_);
+        data_.template emplace<BigStore>(std::move(std::get<BigStore>(other.data_)));
         capacity_ = other.capacity_;
         size_ = other.size_;
-        UpdateWorkingStore();
 
         // We've stolen other's large store, must leave it in a valid state
         other.size_ = 0;
-        other.capacity_ = kSmallCapacity;
-        other.UpdateWorkingStore();
+        other.InitSmall();
     }
 
     template <typename T2>
