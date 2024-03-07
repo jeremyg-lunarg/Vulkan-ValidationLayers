@@ -17,6 +17,7 @@
 
 #include <cmath>
 #include <fstream>
+#include <iostream>
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__)
 #include <unistd.h>
 #endif
@@ -471,9 +472,11 @@ void gpuav::Validator::PostCallRecordCmdBindDescriptorSets(VkCommandBuffer comma
                                                            VkPipelineLayout layout, uint32_t firstSet, uint32_t descriptorSetCount,
                                                            const VkDescriptorSet *pDescriptorSets, uint32_t dynamicOffsetCount,
                                                            const uint32_t *pDynamicOffsets, const RecordObject &record_obj) {
+    std::cout << __func__ << " begin cb=" << std::hex << uint64_t(commandBuffer) << std::dec << std::endl;
     BaseClass::PostCallRecordCmdBindDescriptorSets(commandBuffer, pipelineBindPoint, layout, firstSet, descriptorSetCount,
                                                    pDescriptorSets, dynamicOffsetCount, pDynamicOffsets, record_obj);
     UpdateBoundDescriptors(commandBuffer, pipelineBindPoint, record_obj.location);
+    std::cout << __func__ << " end" << std::endl;
 }
 void gpuav::Validator::PostCallRecordCmdBindDescriptorSets2KHR(VkCommandBuffer commandBuffer,
                                                                const VkBindDescriptorSetsInfoKHR *pBindDescriptorSetsInfo,
@@ -716,11 +719,13 @@ void gpuav::Validator::PreCallRecordCmdDrawMeshTasksIndirectCountEXT(VkCommandBu
 
 void gpuav::Validator::PreCallRecordCmdDispatch(VkCommandBuffer commandBuffer, uint32_t x, uint32_t y, uint32_t z,
                                                 const RecordObject &record_obj) {
+    std::cout << __func__ << " begin cb=" << std::hex << uint64_t(commandBuffer) << std::dec << std::endl;
     BaseClass::PreCallRecordCmdDispatch(commandBuffer, x, y, z, record_obj);
     CommandResources cmd_resources =
         AllocateActionCommandResources(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, record_obj.location);
     auto cmd_resources_ptr = std::make_unique<CommandResources>(cmd_resources);
     StoreCommandResources(commandBuffer, std::move(cmd_resources_ptr), record_obj.location);
+    std::cout << __func__ << " end" << std::endl;
 }
 
 void gpuav::Validator::PreCallRecordCmdDispatchIndirect(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset,

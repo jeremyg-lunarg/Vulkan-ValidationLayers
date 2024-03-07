@@ -21,6 +21,7 @@
 #include "generated/spirv_grammar_helper.h"
 #include "utils/image_layout_utils.h"
 #include "state_tracker/render_pass_state.h"
+#include <iostream>
 
 using LayoutRange = image_layout_map::ImageSubresourceLayoutMap::RangeType;
 using LayoutEntry = image_layout_map::ImageSubresourceLayoutMap::LayoutEntry;
@@ -86,8 +87,18 @@ void gpuav::Validator::UpdateCmdBufImageLayouts(const vvl::CommandBuffer &cb_sta
         }
         auto image_state = Get<vvl::Image>(image);
         if (image_state && image_state->GetId() == layout_map_entry.second.id) {
+            std::cout << __func__ << " before image=" << std::hex << uint64_t(image) << std::dec << std::endl;
+            for (const auto &entry : *image_state->layout_range_map) {
+                std::cout << "\trange=[" << entry.first.begin << "-" << entry.first.end
+                          << "] layout=" << string_VkImageLayout(entry.second) << std::endl;
+            }
             auto guard = image_state->layout_range_map->WriteLock();
             sparse_container::splice(*image_state->layout_range_map, subres_map->GetLayoutMap(), GlobalLayoutUpdater());
+            std::cout << __func__ << " after image=" << std::hex << uint64_t(image) << std::dec << std::endl;
+            for (const auto &entry : *image_state->layout_range_map) {
+                std::cout << "\trange=[" << entry.first.begin << "-" << entry.first.end
+                          << "] layout=" << string_VkImageLayout(entry.second) << std::endl;
+            }
         }
     }
 }
@@ -95,11 +106,13 @@ void gpuav::Validator::UpdateCmdBufImageLayouts(const vvl::CommandBuffer &cb_sta
 void gpuav::Validator::RecordTransitionImageLayout(vvl::CommandBuffer &cb_state, const ImageBarrier &mem_barrier) {
     if (enabled_features.synchronization2) {
         if (mem_barrier.oldLayout == mem_barrier.newLayout) {
+            std::cout << __func__ << ":" << __LINE__ << std::endl;
             return;
         }
     }
     auto image_state = Get<vvl::Image>(mem_barrier.image);
     if (!image_state) {
+        std::cout << __func__ << ":" << __LINE__ << std::endl;
         return;
     }
     auto normalized_isr = image_state->NormalizeSubresourceRange(mem_barrier.subresourceRange);
@@ -122,8 +135,10 @@ void gpuav::Validator::RecordTransitionImageLayout(vvl::CommandBuffer &cb_state,
     //
     // However, we still need to record initial layout for the "initial layout" validation
     if (cb_state.IsReleaseOp(mem_barrier)) {
+        std::cout << __func__ << ":" << __LINE__ << std::endl;
         cb_state.SetImageInitialLayout(*image_state, normalized_isr, initial_layout);
     } else {
+        std::cout << __func__ << ":" << __LINE__ << std::endl;
         cb_state.SetImageLayout(*image_state, normalized_isr, new_layout, initial_layout);
     }
 }
@@ -132,6 +147,8 @@ void gpuav::Validator::TransitionImageLayouts(vvl::CommandBuffer &cb_state, uint
                                               const VkImageMemoryBarrier2 *image_barriers) {
     for (uint32_t i = 0; i < barrier_count; i++) {
         const ImageBarrier barrier(image_barriers[i]);
+        std::cout << __func__ << " image=" << std::hex << uint64_t(barrier.image) << std::dec 
+                  << " old=" << string_VkImageLayout(barrier.oldLayout) << " new=" << string_VkImageLayout(barrier.newLayout) << std::endl;
         RecordTransitionImageLayout(cb_state, barrier);
     }
 }
@@ -530,29 +547,35 @@ void gpuav::Validator::PreCallRecordCmdPipelineBarrier(
     VkDependencyFlags dependencyFlags, uint32_t memoryBarrierCount, const VkMemoryBarrier *pMemoryBarriers,
     uint32_t bufferMemoryBarrierCount, const VkBufferMemoryBarrier *pBufferMemoryBarriers, uint32_t imageMemoryBarrierCount,
     const VkImageMemoryBarrier *pImageMemoryBarriers, const RecordObject &record_obj) {
+    std::cout << __func__ << " begin cb=" << std::hex << uint64_t(commandBuffer) << std::dec << std::endl;
     BaseClass::PreCallRecordCmdPipelineBarrier(commandBuffer, srcStageMask, dstStageMask, dependencyFlags, memoryBarrierCount,
                                                pMemoryBarriers, bufferMemoryBarrierCount, pBufferMemoryBarriers,
                                                imageMemoryBarrierCount, pImageMemoryBarriers, record_obj);
 
     auto cb_state = GetWrite<vvl::CommandBuffer>(commandBuffer);
     TransitionImageLayouts(*cb_state, imageMemoryBarrierCount, pImageMemoryBarriers, srcStageMask, dstStageMask);
+    std::cout << __func__ << " end" << std::endl;
 }
 
 void gpuav::Validator::PreCallRecordCmdPipelineBarrier2KHR(VkCommandBuffer commandBuffer,
                                                            const VkDependencyInfoKHR *pDependencyInfo,
                                                            const RecordObject &record_obj) {
+    std::cout << __func__ << " begin cb=" << std::hex << uint64_t(commandBuffer) << std::dec << std::endl;
     BaseClass::PreCallRecordCmdPipelineBarrier2KHR(commandBuffer, pDependencyInfo, record_obj);
 
     auto cb_state = GetWrite<vvl::CommandBuffer>(commandBuffer);
     TransitionImageLayouts(*cb_state, pDependencyInfo->imageMemoryBarrierCount, pDependencyInfo->pImageMemoryBarriers);
+    std::cout << __func__ << " end" << std::endl;
 }
 
 void gpuav::Validator::PreCallRecordCmdPipelineBarrier2(VkCommandBuffer commandBuffer, const VkDependencyInfo *pDependencyInfo,
                                                         const RecordObject &record_obj) {
+    std::cout << __func__ << " begin cb=" << std::hex << uint64_t(commandBuffer) << std::dec << std::endl;
     BaseClass::PreCallRecordCmdPipelineBarrier2(commandBuffer, pDependencyInfo, record_obj);
 
     auto cb_state = GetWrite<vvl::CommandBuffer>(commandBuffer);
     TransitionImageLayouts(*cb_state, pDependencyInfo->imageMemoryBarrierCount, pDependencyInfo->pImageMemoryBarriers);
+    std::cout << __func__ << " end" << std::endl;
 }
 
 void gpuav::Validator::TransitionAttachmentRefLayout(vvl::CommandBuffer &cb_state, const safe_VkAttachmentReference2 &ref) {

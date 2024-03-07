@@ -19,6 +19,7 @@
 #include "gpu_validation.h"
 #include "gpu_vuids.h"
 #include "drawdispatch/descriptor_validator.h"
+#include <iostream>
 
 gpuav::Buffer::Buffer(ValidationStateTracker *dev_data, VkBuffer buff, const VkBufferCreateInfo *pCreateInfo,
                       DescriptorHeap &desc_heap_)
@@ -153,12 +154,16 @@ void gpuav::CommandBuffer::ResetCBState() {
 }
 
 bool gpuav::CommandBuffer::PreProcess() {
+    std::cout << __func__ << " begin cb=" << std::hex << handle_.handle << std::dec << std::endl;
     state_.UpdateInstrumentationBuffer(this);
+    std::cout << __func__ << " end" << std::endl;
     return !per_command_resources.empty() || has_build_as_cmd;
 }
 
 // For the given command buffer, map its debug data buffers and read their contents for analysis.
 void gpuav::CommandBuffer::PostProcess(VkQueue queue, const Location &loc) {
+
+    std::cout << __func__ << " begin cb=" << std::hex << handle_.handle << std::dec << std::endl;
     auto *device_state = static_cast<Validator *>(dev_data);
     uint32_t draw_index = 0;
     uint32_t compute_index = 0;
@@ -198,6 +203,15 @@ void gpuav::CommandBuffer::PostProcess(VkQueue queue, const Location &loc) {
 
                 vvl::DescriptorValidator context(state_, *this, *set.state, i, VK_NULL_HANDLE /*framebuffer*/, draw_loc);
                 auto used_descs = set.output_state->UsedDescriptors(*set.state);
+                std::cout << __func__ << " desc_set=" << std::hex << set.state->Handle().handle << std::dec;
+                for (const auto &u : used_descs) {
+                    std::cout << " (" << u.first << " (";
+                    for (const auto &d : u.second) {
+                        std::cout << " " << d;
+                    }
+                    std::cout << ") )";
+                }
+                std::cout << std::endl;
                 // For each used binding ...
                 for (const auto &u : used_descs) {
                     auto iter = set.binding_req.find(u.first);
@@ -214,6 +228,7 @@ void gpuav::CommandBuffer::PostProcess(VkQueue queue, const Location &loc) {
     }
     ProcessAccelerationStructure(queue, loc);
     state_.UpdateCmdBufImageLayouts(*this);
+    std::cout << __func__ << " end" << std::endl;
 }
 
 void gpuav::CommandBuffer::ProcessAccelerationStructure(VkQueue queue, const Location &loc) {
@@ -246,7 +261,10 @@ gpuav::Queue::Queue(Validator &state, VkQueue q, uint32_t index, VkDeviceQueueCr
     : gpu_tracker::Queue(state, q, index, flags, qfp) {}
 
 uint64_t gpuav::Queue::PreSubmit(std::vector<vvl::QueueSubmission> &&submissions) {
+    std::cout << __func__ << " begin q=" << std::hex << handle_.handle << std::dec << std::endl;
     auto loc = submissions[0].loc.Get();
     static_cast<gpuav::Validator&>(state_).UpdateBDABuffer(loc);
-    return gpu_tracker::Queue::PreSubmit(std::move(submissions));
+    auto result = gpu_tracker::Queue::PreSubmit(std::move(submissions));
+    std::cout << __func__ << " end" << std::endl;
+    return result;
 }

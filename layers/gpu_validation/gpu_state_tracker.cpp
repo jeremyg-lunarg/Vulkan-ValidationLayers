@@ -20,6 +20,7 @@
 #include "vma/vma.h"
 #include "utils/hash_util.h"
 #include "state_tracker/chassis_modification_state.h"
+#include <iostream>
 
 // Implementation for Descriptor Set Manager class
 gpu_tracker::DescriptorSetManager::DescriptorSetManager(VkDevice device, uint32_t num_bindings_in_set)
@@ -571,16 +572,20 @@ void gpu_tracker::Queue::SubmitBarrier(const Location &loc, uint64_t seq) {
 
 uint64_t gpu_tracker::Queue::PreSubmit(std::vector<vvl::QueueSubmission> &&submissions) {
     for (const auto &submission : submissions) {
+        std::cout << __func__ << " begin submission" << std::endl;
         for (auto &cb : submission.cbs) {
+            std::cout << __func__ << " cb=" << std::hex << cb->Handle().handle << std::dec << std::endl;
             auto gpu_cb = std::static_pointer_cast<CommandBuffer>(cb);
             auto guard = gpu_cb->ReadLock();
             gpu_cb->PreProcess();
             for (auto *secondary_cb : gpu_cb->linkedCommandBuffers) {
+                std::cout << __func__ << " sub_cb=" << std::hex << secondary_cb->Handle().handle << std::dec << std::endl;
                 auto secondary_guard = secondary_cb->ReadLock();
                 auto *secondary_gpu_cb = static_cast<CommandBuffer *>(secondary_cb);
                 secondary_gpu_cb->PreProcess();
             }
         }
+        std::cout << __func__ << " end submission" << std::endl;
     }
     return vvl::Queue::PreSubmit(std::move(submissions));
 }
@@ -594,6 +599,7 @@ void gpu_tracker::Queue::PostSubmit(vvl::QueueSubmission &submission) {
 }
 
 void gpu_tracker::Queue::Retire(vvl::QueueSubmission &submission) {
+    std::cout << __func__ << std::endl;
     vvl::Queue::Retire(submission);
     retiring_.emplace_back(submission.cbs);
     if (submission.end_batch) {
@@ -603,8 +609,10 @@ void gpu_tracker::Queue::Retire(vvl::QueueSubmission &submission) {
         wait_info.pValues = &submission.seq;
         DispatchWaitSemaphoresKHR(state_.device, &wait_info, 1000000000);
 
+        std::cout << __func__ << " begin retire" << std::endl;
         for (auto &cbs : retiring_) {
             for (auto &cb : cbs) {
+                std::cout << "\tretire cb=" << std::hex << cb->Handle().handle << std::dec << std::endl;
                 auto gpu_cb = std::static_pointer_cast<CommandBuffer>(cb);
                 auto guard = gpu_cb->WriteLock();
                 auto loc = submission.loc.Get();
@@ -616,6 +624,7 @@ void gpu_tracker::Queue::Retire(vvl::QueueSubmission &submission) {
                 }
             }
         }
+        std::cout << __func__ << " end retire" << std::endl;
         retiring_.clear();
     }
 }

@@ -23,6 +23,7 @@
 #include "state_tracker/ray_tracing_state.h"
 #include "state_tracker/sampler_state.h"
 #include "state_tracker/shader_module.h"
+#include <iostream>
 
 static vvl::DescriptorPool::TypeCountMap GetMaxTypeCounts(const VkDescriptorPoolCreateInfo *create_info) {
     vvl::DescriptorPool::TypeCountMap counts;
@@ -759,6 +760,9 @@ void vvl::ImageDescriptor::UpdateDrawState(ValidationStateTracker *dev_data, vvl
     // Add binding for image
     auto iv_state = GetImageViewState();
     if (iv_state) {
+        std::cout << __func__ << ": image_view=" << std::hex << iv_state->Handle().handle
+                  << " image=" << iv_state->image_state->Handle().handle << std::dec
+                  << " layout=" << string_VkImageLayout(image_layout_) << std::endl;
         dev_data->CallSetImageViewInitialLayoutCallback(cb_state, *iv_state, image_layout_);
     }
 }

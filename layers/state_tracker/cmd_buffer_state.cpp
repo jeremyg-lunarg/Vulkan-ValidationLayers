@@ -23,6 +23,7 @@
 #include "state_tracker/pipeline_state.h"
 #include "state_tracker/buffer_state.h"
 #include "state_tracker/image_state.h"
+#include <iostream>
 
 static ShaderObjectStage inline ConvertToShaderObjectStage(VkShaderStageFlagBits stage) {
     if (stage == VK_SHADER_STAGE_VERTEX_BIT) return ShaderObjectStage::VERTEX;
@@ -229,6 +230,7 @@ void CommandBuffer::ResetCBState() {
 }
 
 void CommandBuffer::Reset() {
+    std::cout << __func__ << " cb=" << std::hex << Handle().handle << " in_use=" << InUse() << std::endl;
     ResetCBState();
     // Remove reverse command buffer links.
     Invalidate(true);
@@ -996,7 +998,9 @@ void CommandBuffer::End(VkResult result) {
 
 void CommandBuffer::ExecuteCommands(vvl::span<const VkCommandBuffer> secondary_command_buffers) {
     RecordCmd(Func::vkCmdExecuteCommands);
+    std::cout << __func__ << " cb=" << std::hex << Handle().handle << " (";
     for (const VkCommandBuffer sub_command_buffer : secondary_command_buffers) {
+        std::cout << " " << uint64_t(sub_command_buffer);
         auto sub_cb_state = dev_data->GetWrite<CommandBuffer>(sub_command_buffer);
         assert(sub_cb_state);
         if (!(sub_cb_state->beginInfo.flags & VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT)) {
@@ -1073,6 +1077,7 @@ void CommandBuffer::ExecuteCommands(vvl::span<const VkCommandBuffer> secondary_c
         label_stack_depth_ += sub_cb_state->label_stack_depth_;
         label_commands_.insert(label_commands_.end(), sub_cb_state->label_commands_.begin(), sub_cb_state->label_commands_.end());
     }
+    std::cout << std::dec << ")" << std::endl;
 }
 
 void CommandBuffer::PushDescriptorSetState(VkPipelineBindPoint pipelineBindPoint, const vvl::PipelineLayout &pipeline_layout,
@@ -1342,6 +1347,8 @@ void CommandBuffer::UpdateLastBoundDescriptorBuffers(VkPipelineBindPoint pipelin
 // Set image layout for given VkImageSubresourceRange struct
 void CommandBuffer::SetImageLayout(const vvl::Image &image_state, const VkImageSubresourceRange &image_subresource_range,
                                    VkImageLayout layout, VkImageLayout expected_layout) {
+    std::cout << __func__ << " cb=" << std::hex << Handle().handle << " image=" << image_state.Handle().handle << std::dec
+              << " layout=" << string_VkImageLayout(layout) << " expected=" << string_VkImageLayout(expected_layout) << std::endl;
     auto subresource_map = GetImageSubresourceLayoutMap(image_state);
     if (subresource_map && subresource_map->SetSubresourceRangeLayout(*this, image_subresource_range, layout, expected_layout)) {
         image_layout_change_count++;  // Change the version of this data to force revalidation
@@ -1356,6 +1363,8 @@ void CommandBuffer::SetImageViewInitialLayout(const vvl::ImageView &view_state, 
     vvl::Image *image_state = view_state.image_state.get();
     auto subresource_map = (image_state && !image_state->Destroyed()) ? GetImageSubresourceLayoutMap(*image_state) : nullptr;
     if (subresource_map) {
+        std::cout << __func__ << " cb=" << std::hex << Handle().handle << " image=" << image_state->Handle().handle << std::dec
+                  << " layout=" << string_VkImageLayout(layout) << std::endl;
         subresource_map->SetSubresourceRangeInitialLayout(*this, layout, view_state);
     }
 }
@@ -1365,6 +1374,8 @@ void CommandBuffer::SetImageInitialLayout(const vvl::Image &image_state, const V
                                           VkImageLayout layout) {
     auto subresource_map = GetImageSubresourceLayoutMap(image_state);
     if (subresource_map) {
+        std::cout << __func__ << " cb=" << std::hex << Handle().handle << " image=" << image_state.Handle().handle << std::dec
+                  << " layout=" << string_VkImageLayout(layout) << std::endl;
         subresource_map->SetSubresourceRangeInitialLayout(*this, image_state.NormalizeSubresourceRange(range), layout);
     }
 }
@@ -1386,6 +1397,9 @@ void CommandBuffer::SetImageViewLayout(const vvl::ImageView &view_state, VkImage
 
     VkImageSubresourceRange sub_range = view_state.normalized_subresource_range;
 
+    std::cout << __func__ << " cb=" << std::hex << Handle().handle << " view=" << view_state.Handle().handle
+                          << " image=" << view_state.image_state->Handle().handle << std::dec
+                          << " layout=" << string_VkImageLayout(layout) << std::endl;
     if (sub_range.aspectMask == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) && layoutStencil != kInvalidLayout) {
         sub_range.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
         SetImageLayout(*image_state, sub_range, layout);
