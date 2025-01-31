@@ -47,6 +47,20 @@
 namespace vvl {
 DeviceState::~DeviceState() { DestroyObjectMaps(); }
 
+void DeviceState::AddProxy(DeviceProxy *proxy) { proxies.emplace(proxy->container_type, proxy); }
+
+void DeviceState::RemoveProxy(const DeviceProxy *proxy) {
+    // this is used by gpuav abort so it needs to clean up any substates as well
+    proxies.erase(proxy->container_type);
+    ForEachShared<vvl::CommandBuffer>(
+        [proxy](std::shared_ptr<vvl::CommandBuffer> state) { state->RemoveSubState(proxy->container_type); });
+    ForEachShared<vvl::Queue>([proxy](std::shared_ptr<vvl::Queue> state) { state->RemoveSubState(proxy->container_type); });
+    ForEachShared<vvl::Swapchain>([proxy](std::shared_ptr<vvl::Swapchain> state) { state->RemoveSubState(proxy->container_type); });
+    ForEachShared<vvl::Image>([proxy](std::shared_ptr<vvl::Image> state) { state->RemoveSubState(proxy->container_type); });
+    ForEachShared<vvl::DescriptorSet>(
+        [proxy](std::shared_ptr<vvl::DescriptorSet> state) { state->RemoveSubState(proxy->container_type); });
+}
+
 VkDeviceAddress DeviceState::GetBufferDeviceAddressHelper(VkBuffer buffer, const DeviceExtensions *exts = nullptr) const {
     // GPU-AV needs to pass in the modified extensions, since it may turn on BDA on its own
     if (!exts) {
@@ -1726,12 +1740,6 @@ bool DeviceState::PreCallValidateCreateGraphicsPipelines(VkDevice device, VkPipe
                 has_fragment_output_state && Pipeline::EnablesRasterizationStates(*this, create_info);
 
             render_pass = std::make_shared<RenderPass>(pipeline_rendering_ci, rasterization_enabled);
-        } else {
-            const bool is_graphics_lib = GetGraphicsLibType(create_info) != static_cast<VkGraphicsPipelineLibraryFlagsEXT>(0);
-            const bool has_link_info = vku::FindStructInPNextChain<VkPipelineLibraryCreateInfoKHR>(create_info.pNext) != nullptr;
-            if (!is_graphics_lib && !has_link_info) {
-                skip = true;
-            }
         }
         pipeline_states.push_back(CreateGraphicsPipelineState(&create_info, pipeline_cache, std::move(render_pass),
                                                               std::move(layout_state), chassis_state.stateless_data));
@@ -4352,16 +4360,16 @@ void DeviceState::PostCallRecordCreateSamplerYcbcrConversionKHR(VkDevice device,
     PostCallRecordCreateSamplerYcbcrConversion(device, pCreateInfo, pAllocator, pYcbcrConversion, record_obj);
 }
 
-void DeviceState::PostCallRecordDestroySamplerYcbcrConversion(VkDevice device, VkSamplerYcbcrConversion ycbcrConversion,
-                                                              const VkAllocationCallbacks *pAllocator,
-                                                              const RecordObject &record_obj) {
+void DeviceState::PreCallRecordDestroySamplerYcbcrConversion(VkDevice device, VkSamplerYcbcrConversion ycbcrConversion,
+                                                             const VkAllocationCallbacks *pAllocator,
+                                                             const RecordObject &record_obj) {
     Destroy<SamplerYcbcrConversion>(ycbcrConversion);
 }
 
-void DeviceState::PostCallRecordDestroySamplerYcbcrConversionKHR(VkDevice device, VkSamplerYcbcrConversion ycbcrConversion,
-                                                                 const VkAllocationCallbacks *pAllocator,
-                                                                 const RecordObject &record_obj) {
-    PostCallRecordDestroySamplerYcbcrConversion(device, ycbcrConversion, pAllocator, record_obj);
+void DeviceState::PreCallRecordDestroySamplerYcbcrConversionKHR(VkDevice device, VkSamplerYcbcrConversion ycbcrConversion,
+                                                                const VkAllocationCallbacks *pAllocator,
+                                                                const RecordObject &record_obj) {
+    PreCallRecordDestroySamplerYcbcrConversion(device, ycbcrConversion, pAllocator, record_obj);
 }
 
 void DeviceState::PostCallRecordResetQueryPoolEXT(VkDevice device, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount,
@@ -5596,9 +5604,9 @@ void DeviceState::PostCallRecordCreateIndirectExecutionSetEXT(VkDevice device,
     Add(std::move(indirect_execution_state));
 }
 
-void DeviceState::PostCallRecordDestroyIndirectExecutionSetEXT(VkDevice device, VkIndirectExecutionSetEXT indirectExecutionSet,
-                                                               const VkAllocationCallbacks *pAllocator,
-                                                               const RecordObject &record_obj) {
+void DeviceState::PreCallRecordDestroyIndirectExecutionSetEXT(VkDevice device, VkIndirectExecutionSetEXT indirectExecutionSet,
+                                                              const VkAllocationCallbacks *pAllocator,
+                                                              const RecordObject &record_obj) {
     Destroy<IndirectExecutionSet>(indirectExecutionSet);
 }
 
@@ -5611,10 +5619,9 @@ void DeviceState::PostCallRecordCreateIndirectCommandsLayoutEXT(VkDevice device,
     Add(std::make_shared<IndirectCommandsLayout>(*this, *pIndirectCommandsLayout, pCreateInfo));
 }
 
-void DeviceState::PostCallRecordDestroyIndirectCommandsLayoutEXT(VkDevice device,
-                                                                 VkIndirectCommandsLayoutEXT indirectCommandsLayout,
-                                                                 const VkAllocationCallbacks *pAllocator,
-                                                                 const RecordObject &record_obj) {
+void DeviceState::PreCallRecordDestroyIndirectCommandsLayoutEXT(VkDevice device, VkIndirectCommandsLayoutEXT indirectCommandsLayout,
+                                                                const VkAllocationCallbacks *pAllocator,
+                                                                const RecordObject &record_obj) {
     Destroy<IndirectCommandsLayout>(indirectCommandsLayout);
 }
 }  // namespace vvl
